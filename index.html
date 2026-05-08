@@ -243,6 +243,7 @@
       cursor: pointer; font-weight: 700; font-family: 'Inter', sans-serif;
       transition: transform 150ms ease, box-shadow 300ms ease, opacity 150ms ease;
       margin-bottom: 12px; -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
       position: relative; overflow: hidden;
     }
     .btn::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(255,255,255,0.09), transparent); border-radius: inherit; pointer-events: none; }
@@ -384,6 +385,24 @@
 
     footer { font-size: 0.6rem; letter-spacing: 3px; text-transform: uppercase; opacity: 0.18; margin-top: 20px; }
 
+    /* ── Mobile optimisations ── */
+    @media (max-width: 400px) {
+      h1 { font-size: 1.5rem; letter-spacing: 3px; }
+      #s-name h1 { font-size: 1.8rem; }
+      .names-grid { gap: 8px; }
+      .name-card { padding: 12px 8px; border-radius: 12px; }
+      .name-card .nc-name { font-size: 0.85rem; }
+      .rooms-grid { gap: 8px; }
+      .room-card, .room-card-mafia, .room-card-poker { padding: 14px 8px; border-radius: 12px; }
+      .room-card .rn, .mafia-num, .poker-num { font-size: 1.6rem; }
+      .lb-section, .online-section, .chat-section { border-radius: 14px; padding: 14px 12px; }
+    }
+    @supports not (backdrop-filter: blur(1px)) {
+      .name-card, .room-card, .room-card-mafia, .room-card-poker,
+      .lb-section, .online-section, .chat-section, .code-box, .score-box, .player-badge {
+        background: rgba(8, 4, 28, 0.92) !important;
+      }
+    }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
     }
@@ -571,7 +590,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-  <div class="app-version">v3.1</div>
+  <div class="app-version">v3.2</div>
 </div>
 
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
@@ -1199,9 +1218,11 @@
     if (typeof THREE === 'undefined') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
+    const isMobile = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
     const canvas = document.getElementById('bg-canvas');
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.setPixelRatio(isMobile ? 1 : Math.min(devicePixelRatio, 1.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setClearColor(0x000000, 0);
 
@@ -1209,8 +1230,8 @@
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
     camera.position.set(0, 0, 30);
 
-    /* foreground particles — gold + white */
-    const N1 = 1600;
+    /* foreground particles — gold + white; fewer on mobile */
+    const N1 = isMobile ? 500 : 1600;
     const pos1 = new Float32Array(N1 * 3);
     const col1 = new Float32Array(N1 * 3);
     for (let i = 0; i < N1; i++) {
@@ -1229,7 +1250,7 @@
     scene.add(pts1);
 
     /* background nebula — purple */
-    const N2 = 1000;
+    const N2 = isMobile ? 200 : 1000;
     const pos2 = new Float32Array(N2 * 3);
     for (let i = 0; i < N2; i++) {
       pos2[i*3]   = (Math.random()-0.5)*130;

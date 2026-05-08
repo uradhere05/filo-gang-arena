@@ -76,6 +76,7 @@
       cursor: pointer; font-weight: 700; font-family: 'Inter', sans-serif;
       transition: transform 150ms ease, box-shadow 300ms ease;
       margin-bottom: 12px; -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
       position: relative; overflow: hidden;
     }
     .btn::after { content:''; position:absolute; inset:0; background:linear-gradient(to bottom,rgba(255,255,255,0.09),transparent); border-radius:inherit; pointer-events:none; }
@@ -184,6 +185,21 @@
 
     footer { font-size:0.6rem; letter-spacing:3px; text-transform:uppercase; opacity:0.18; margin-top:20px; }
 
+    /* ── Mobile optimisations ── */
+    @media (max-width: 480px) {
+      h1 { font-size: 1.5rem; letter-spacing: 3px; }
+      .scoreboard { gap: 16px; }
+      .score-box { padding: 8px 12px; min-width: 70px; }
+      .score-val { font-size: 1.5rem; }
+      .touch-btn { height: 64px; font-size: 1.6rem; border-radius: 16px; }
+      .touch-controls { gap: 10px; margin-top: 12px; }
+      .lb-section, .online-section { border-radius: 14px; padding: 14px 12px; }
+    }
+    @supports not (backdrop-filter: blur(1px)) {
+      .score-box, .player-badge, .lb-section, .online-section, .code-box, .touch-btn {
+        background: rgba(8, 4, 28, 0.92) !important;
+      }
+    }
     @media (prefers-reduced-motion:reduce) {
       *,*::before,*::after { animation-duration:0.01ms !important; transition-duration:0.01ms !important; }
     }
@@ -270,7 +286,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-  <div class="app-version">v3.1</div>
+  <div class="app-version">v3.2</div>
 </div>
 
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
@@ -326,8 +342,10 @@
   function gy(py) { return -(py * S - H3 / 2); }  // pixel-y → world-y (flipped)
 
   /* Renderer */
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const _isMobile = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: !_isMobile });
+  renderer.setPixelRatio(_isMobile ? 1 : Math.min(devicePixelRatio, 2));
   renderer.setClearColor(0x000814, 1);
   renderer.setSize(CW, CH, false); // internal buffer fixed at 600×340; CSS scales display
 
@@ -396,18 +414,18 @@
 
   /* Ball — gold */
   const ballMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(br3, 20, 20),
+    new THREE.SphereGeometry(br3, _isMobile ? 12 : 20, _isMobile ? 12 : 20),
     new THREE.MeshStandardMaterial({ color: 0xffd200, emissive: 0xffd200, emissiveIntensity: 0.7, roughness: 0.15, metalness: 0.7 })
   );
   scene.add(ballMesh);
   const ballLight = new THREE.PointLight(0xffd200, 5, 5);
   scene.add(ballLight);
 
-  /* Ball trail — 7 ghost spheres */
-  const TRAIL_LEN = 7;
+  /* Ball trail — fewer spheres on mobile for perf */
+  const TRAIL_LEN = _isMobile ? 3 : 7;
   const trailMeshes = Array.from({ length: TRAIL_LEN }, (_, i) => {
     const t = new THREE.Mesh(
-      new THREE.SphereGeometry(br3 * (1 - i * 0.1), 8, 8),
+      new THREE.SphereGeometry(br3 * (1 - i * 0.1), _isMobile ? 6 : 8, _isMobile ? 6 : 8),
       new THREE.MeshStandardMaterial({ color: 0xffd200, emissive: 0xffd200, emissiveIntensity: 0.3, transparent: true, opacity: 0, depthWrite: false })
     );
     t.visible = false;
