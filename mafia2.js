@@ -261,11 +261,12 @@ async function lobbyTick(){
   rBtn.textContent=amReady?'⬜ Cancel Ready':'✅ Ready Up';
   rBtn.className='btn w100'+(amReady?' btn-secondary':' btn-primary');
 
-  // Proceed button: host only, when ALL lobby players are ready (minimum MIN_READY)
-  const canProceed=isHost&&players.length>=MIN_READY&&readyCount===players.length;
+  // Proceed button: host only, when all non-host players are ready (minimum MIN_READY)
+  const nonHostPlayers=players.filter(p=>p.name!==hostName);
+  const canProceed=isHost&&nonHostPlayers.length>=MIN_READY&&nonHostPlayers.every(p=>p.ready);
   const proceedBtn=document.getElementById('lb-proceed-btn');
   proceedBtn.style.display=canProceed?'':'none';
-  if(canProceed) proceedBtn.textContent=`▶ Assign Roles (${readyCount} ready)`;
+  if(canProceed) proceedBtn.textContent=`▶ Assign Roles (${nonHostPlayers.length} ready)`;
 }
 
 async function claimHost(){
