@@ -128,7 +128,7 @@ async function checkActiveGame(){
           if(iAmHost){
             const fl=await fb('GET','/mafia2/lobby')||{};
             rolesMap={};
-            const _fnow=Date.now();Object.values(fl).filter(p=>p&&p.name&&p.name!==myName&&_fnow-p.ts<75000).forEach(p=>rolesMap[p.name]='');
+            const _fnow=Date.now();Object.values(fl).filter(p=>p&&p.name&&p.name!==myName&&_fnow-p.ts<300000).forEach(p=>rolesMap[p.name]='');
             show('s-assign');renderAssignScreen();
           }else{show('s-player');renderWaiting();startPlayerPolling();}
         }else{
@@ -252,7 +252,7 @@ async function lobbyTick(){
         const _lnow=Date.now();
         rolesMap={};
         Object.values(freshLobby)
-          .filter(p=>p&&p.name&&p.name!==myName&&_lnow-p.ts<75000)
+          .filter(p=>p&&p.name&&p.name!==myName&&_lnow-p.ts<300000)
           .forEach(p=>rolesMap[p.name]='');
         show('s-assign');renderAssignScreen();
       } else {show('s-player');renderWaiting();startPlayerPolling();}
@@ -266,7 +266,7 @@ async function lobbyTick(){
   // Build online set
   const now=Date.now();
   const online=onlineD?Object.entries(onlineD)
-    .filter(([,v])=>v&&(now-v.ts<75000))
+    .filter(([,v])=>v&&(now-v.ts<300000))
     .map(([k])=>decN(k)):[];
 
   // Build lobby player list — exclude players not seen online within 75s
@@ -361,7 +361,7 @@ async function proceedToAssign(){
   const _now=Date.now();
   rolesMap={};
   Object.values(freshLobby)
-    .filter(p=>p&&p.name&&p.name!==hostName&&_now-p.ts<75000)
+    .filter(p=>p&&p.name&&p.name!==hostName&&_now-p.ts<300000)
     .forEach(p=>rolesMap[p.name]='');
   await fb('PUT','/mafia2/phase','assigning');
   stopIvs();
@@ -391,7 +391,7 @@ function renderAssignScreen(){
       if(freshLobby){
         const _now=Date.now();
         Object.values(freshLobby)
-          .filter(p=>p&&p.name&&p.name!==hostName&&_now-p.ts<75000)
+          .filter(p=>p&&p.name&&p.name!==hostName&&_now-p.ts<300000)
           .forEach(p=>{if(!(p.name in rolesMap))rolesMap[p.name]='';});
         renderAssignScreen();
       }
