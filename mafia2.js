@@ -18,7 +18,7 @@ const MIN_READY=5;
 let isHost=false,myName='',myRole=null,round=1,hostName='';
 let rolesMap={},aliveMap={},myAction=null,myVote=null,mySuspect=null,ivs=[],knownPhase='';
 let amReady=false,lobbyPlayers={},lastSave='',myAvatar='',avatarsMap={};
-let isEnded=false,myEliminated=false,_lastAutoAnn='',_assignPoller=null;
+let isEnded=false,myEliminated=false,_lastAutoAnn='',_assignPoller=null,_presenceIv=null;
 
 /* ─── Firebase ─── */
 function getWeekKey(){
@@ -115,6 +115,7 @@ function init(){
     myName=simName;
     myAvatar=simAvatar||'🕵️';
     startPhaseStream();
+    startPresenceKeeper();
     if(autoJoin==='host'){joinAsGameMaster();return;}
     joinAsPlayer();return;
   }
@@ -124,6 +125,7 @@ function init(){
     myAvatar=localStorage.getItem('filoAvatar')||'🕵️';
     if(!localStorage.getItem('filoAvatar')) localStorage.setItem('filoAvatar',myAvatar);
     startPhaseStream();
+    startPresenceKeeper();
     if(autoJoin==='host'){joinAsGameMaster();return;}
     if(autoJoin==='player'){joinAsPlayer();return;}
     if(!myAvatar){showAvatarSelect();return;}
@@ -209,10 +211,7 @@ async function enterLobby(){
   amReady=false;myRole=null;myAction=null;myVote=null;knownPhase='';myEliminated=false;
   show('s-lobby');
   await writeLobbyPresence();
-  // Guard: SSE may have already rescued us off s-lobby during the async write
-  if(document.getElementById('s-lobby').classList.contains('active')){
-    startLobbyPolling();
-  }
+  startLobbyPolling();
 }
 
 async function writeLobbyPresence(){
@@ -223,11 +222,19 @@ async function writeLobbyPresence(){
   ]);
 }
 
+// Presence keeper runs independently of ivs[] so stopIvs() never kills it.
+// Writes every 30s — survives Chrome background-tab timer throttling (min ~60s actual).
+// Call once after myName is set; never call again.
+function startPresenceKeeper(){
+  if(_presenceIv) return;
+  _presenceIv=setInterval(()=>{if(myName)writeLobbyPresence().catch(()=>{});},30000);
+}
+
 function startLobbyPolling(){
+  if(!document.getElementById('s-lobby').classList.contains('active')) return;
   stopIvs();
   lobbyTick();
   ivs.push(setInterval(lobbyTick,2000));
-  ivs.push(setInterval(writeLobbyPresence,20000));
 }
 
 async function lobbyTick(){
