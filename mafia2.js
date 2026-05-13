@@ -379,11 +379,21 @@ function renderAssignScreen(){
       if(!document.getElementById('s-assign').classList.contains('active')){
         clearInterval(window._assignPoller);window._assignPoller=null;return;
       }
-      const phaseD=await fb('GET','/mafia2/phase');
+      const [phaseD,freshLobby]=await Promise.all([
+        fb('GET','/mafia2/phase'),
+        fb('GET','/mafia2/lobby'),
+      ]);
       if(phaseD&&phaseD!=='assigning'){
         clearInterval(window._assignPoller);window._assignPoller=null;
-        await reloadHostState();
-        await reconnectHost(phaseD);
+        await reloadHostState();await reconnectHost(phaseD);return;
+      }
+      // Refresh player list — picks up late-joining players
+      if(freshLobby){
+        const _now=Date.now();
+        Object.values(freshLobby)
+          .filter(p=>p&&p.name&&p.name!==hostName&&_now-p.ts<75000)
+          .forEach(p=>{if(!(p.name in rolesMap))rolesMap[p.name]='';});
+        renderAssignScreen();
       }
     },1500);
   }
@@ -1078,6 +1088,11 @@ document.addEventListener('visibilitychange',()=>{
       else if(phD==='vote'){stopIvs();ivs.push(setInterval(pollVotes,1000));}
     });
   }
+});
+
+// Re-write lobby presence when Safari un-suspends a background tab (pageshow / BFcache restore)
+window.addEventListener('pageshow', (e) => {
+  if(e.persisted && myName) writeLobbyPresence().catch(()=>{});
 });
 
 window.addEventListener('beforeunload', () => {
