@@ -296,7 +296,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-  <div class="app-version">v2.30</div>
+  <div class="app-version">v2.31</div>
 </div>
 
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
@@ -327,6 +327,9 @@
   let frameCount  = 0;
   let scores = { left: 0, right: 0 };
   let wantsRematch = false;
+  let dropCountdownIv = null;
+  let _reconnectTries = 0;
+  const MAX_RECONNECT = 8;
 
   function updateFormatBadge() {
     const txt = `Best of ${WINS_NEED*2-1} • First to ${WINS_NEED} wins`;
@@ -612,7 +615,7 @@
       const sorted=Object.entries(totals).sort((a,b)=>b[1]-a[1]);
       const medals=['🥇','🥈','🥉'];
       const html=sorted.length
-        ?sorted.map(([name,w],i)=>`<div class="lb-row ${i===0?'gold':''}"><span class="lb-rank">${medals[i]||(i+1)+'.'}</span><span class="lb-name">${name}</span><span class="lb-wins">${w} win${w!==1?'s':''}</span></div>`).join('')
+        ?sorted.map(([name,w],i)=>`<div class="lb-row ${i===0?'gold':''}"><span class="lb-rank">${medals[i]||(i+1)+'.'}</span><span class="lb-name">${escHtml(name)}</span><span class="lb-wins">${w} win${w!==1?'s':''}</span></div>`).join('')
         :'<div class="lb-empty">No Picklebol wins yet this week</div>';
       listEls.forEach(el=>{el.innerHTML=html;});
       lbLastLoad=Date.now();
@@ -683,8 +686,9 @@
   function stopWaitHeartbeat(){clearInterval(waitHeartbeat);}
 
   function destroyPeer(){
-    stopHeartbeat();stopLoop();stopOnlinePoll();
+    stopHeartbeat();stopWaitHeartbeat();stopLoop();stopOnlinePoll();
     clearInterval(onlineHeartbeat);onlineHeartbeat=null;
+    clearInterval(dropCountdownIv);dropCountdownIv=null;
     wantsRematch=false;
     if(myRole){clearPresence(myRole);myRole=null;}
     try{conn&&conn.close();}catch{}
@@ -726,12 +730,18 @@
 
   /* ── Room entry ── */
   function enterPickelbolRoom(){
+    _reconnectTries=0;
     show('s-wait');
     peer=new Peer(PEER_ID,PEER_CFG);
     peer.on('open',()=>{
       myRole='host';writePresence('host');startWaitHeartbeat();
-      peer.on('disconnected',()=>{try{peer.reconnect();}catch{}});
+      peer.on('disconnected',()=>{
+        if(++_reconnectTries<=MAX_RECONNECT){try{peer.reconnect();}catch{}}
+      });
       peer.on('connection',c=>{
+        if(conn&&conn.open){c.close();return;}
+        clearInterval(dropCountdownIv);dropCountdownIv=null;
+        myRole='host';
         conn=c;wireConn();
         conn.on('open',()=>{send({type:'start',hostName:myName});writePresence('host');startPickelbolGame();startHeartbeat();});
       });
@@ -743,14 +753,16 @@
   }
 
   function joinPickelbolRoom(){
+    _reconnectTries=0;
     peer=new Peer(PEER_CFG);myRole='guest';
     const giveUp=setTimeout(()=>{destroyPeer();toast('No host found — try again.');setTimeout(()=>window.location.href='index.html',2500);},12000);
-    peer.on('disconnected',()=>{try{peer.reconnect();}catch{}});
+    peer.on('disconnected',()=>{
+      if(++_reconnectTries<=MAX_RECONNECT){try{peer.reconnect();}catch{}}
+    });
     peer.on('open',()=>{
       writePresence('guest');startWaitHeartbeat();
       conn=peer.connect(PEER_ID,{reliable:true,serialization:'json'});
-      wireConn();
-      conn.on('open',()=>{clearTimeout(giveUp);writePresence('guest');startHeartbeat();});
+      conn.on('open',()=>{wireConn();clearTimeout(giveUp);writePresence('guest');startHeartbeat();});
     });
     peer.on('error',()=>{clearTimeout(giveUp);destroyPeer();toast('Could not join Picklebol — try again.');setTimeout(()=>window.location.href='index.html',2500);});
   }
@@ -772,11 +784,10 @@
         break;
       case 'game-over':
         stopLoop();
-        showChampion((mySide==='left'&&scores.left>=WINS_NEED)||(mySide==='right'&&scores.right>=WINS_NEED));
+        showChampion(mySide===msg.winner);
         break;
       case 'rematch-req':  wantsRematch=true;toast('Opponent wants a rematch — tap 🔄 Rematch!'); break;
       case 'rematch-ok':   doRematch(); break;
-      case 'rematch':      doRematch(); break;
     }
   }
 
@@ -825,8 +836,9 @@
     sndScore();refreshScores();
     const over=scores.left>=WINS_NEED||scores.right>=WINS_NEED;
     if(over){
+      const winSide=scores.left>=WINS_NEED?'left':'right';
       send({type:'score',left:scores.left,right:scores.right,reset:false});
-      stopLoop();send({type:'game-over'});
+      stopLoop();send({type:'game-over',winner:winSide});
       showChampion(scores.left>=WINS_NEED);
     }else{
       send({type:'score',left:scores.left,right:scores.right,reset:true});
@@ -858,7 +870,7 @@
     else{wantsRematch=true;send({type:'rematch-req'});toast('Waiting for opponent…');}
   }
   function doRematch(){
-    wantsRematch=false;scores={left:0,right:0};refreshScores();resetPositions();show('s-game');
+    wantsRematch=false;scores={left:0,right:0};refreshScores();resetPositions();updateNameDisplays();show('s-game');
     if(mySide==='left')resetBall();else{ball.x=CW/2;ball.y=CH/2;ball.vx=0;ball.vy=0;}
     startLoop();
   }
@@ -866,10 +878,21 @@
   function cancelGame(){destroyPeer();window.location.href=`index.html?screen=lobby&name=${encodeURIComponent(myName||'')}`;}
 
   function onDrop(){
-    stopHeartbeat();if(myRole){clearPresence(myRole);myRole=null;}setConn(false);stopLoop();
+    clearInterval(dropCountdownIv); dropCountdownIv=null;
+    stopHeartbeat();stopWaitHeartbeat();
+    if(myRole){clearPresence(myRole);myRole=null;}
+    setConn(false);stopLoop();
+    // If already on champion screen, disconnect silently — don't force-navigate
+    if(document.getElementById('s-champ').classList.contains('active')){
+      toast('Opponent disconnected.'); return;
+    }
     let secs=5;
-    const tick=()=>{setStatus(`<span class="dc">Opponent disconnected — returning in ${secs}s</span>`);if(secs--<=0){clearInterval(iv);window.location.href=`index.html?screen=lobby&name=${encodeURIComponent(myName)}`;}};
-    tick();const iv=setInterval(tick,1000);
+    const tick=()=>{
+      setStatus(`<span class="dc">Opponent disconnected — returning in ${secs}s</span>`);
+      if(secs--<=0){clearInterval(dropCountdownIv);dropCountdownIv=null;window.location.href=`index.html?screen=lobby&name=${encodeURIComponent(myName)}`;}
+    };
+    tick();
+    dropCountdownIv=setInterval(tick,1000);
   }
 
   /* ── Boot ── */
