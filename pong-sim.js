@@ -1,163 +1,210 @@
 /**
- * Room 5-6 Picklebol simulation — tests bug fixes in pong.html.
- * Opens 2 headless Chrome windows, both join a test room (98),
- * scores 5 points for left player via ball injection,
- * then tests rematch handshake and disconnect countdown cancel.
- *
- * Uses room 98 to avoid stale PEER_ID collisions from previous runs.
- * Uses headless mode so macOS window focus throttling can't affect timing.
- * Polls for s-game (instead of a fixed sleep) and freezes the ball
- * immediately so auto-scoring can't end the game before checks run.
- *
+ * Room 5-6 Picklebol cross-browser simulation.
+ * Runs the full 11-assertion suite on Chromium, Firefox, and WebKit.
+ * Each browser gets its own room number (98/99/100) so PEER_IDs
+ * never collide across concurrent or sequential runs.
  * Run: node pong-sim.js
  */
-const { chromium } = require('playwright');
+const { chromium, firefox, webkit } = require('playwright');
 
-const PONG  = 'http://localhost:8080/pong.html?room=98';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const BASE_URL = 'http://localhost:8080/pong.html';
+const sleep    = ms => new Promise(r => setTimeout(r, ms));
 
-let passed = 0, failed = 0;
-function assert(ok, label, detail = '') {
-  if (ok) { console.log(`  ✅ PASS  ${label}`); passed++; }
-  else     { console.log(`  ❌ FAIL  ${label}${detail ? ' — ' + detail : ''}`); failed++; }
+/* ── helpers ── */
+function assert(ok, label, detail, results) {
+  const entry = { ok, label, detail };
+  results.push(entry);
+  if (ok) console.log(`    ✅ PASS  ${label}`);
+  else     console.log(`    ❌ FAIL  ${label}${detail ? ' — ' + detail : ''}`);
 }
 
-async function openPlayer(browser, name, avatar) {
-  const ctx  = await browser.newContext({ viewport: { width: 640, height: 780 } });
+async function openPlayer(browser, name, avatar, room) {
+  // Use storageState to pre-populate localStorage — works across all browsers
+  // including WebKit, which does not guarantee addInitScript localStorage
+  // persistence before the page's own login-guard script runs.
+  const ctx = await browser.newContext({
+    viewport: { width: 640, height: 780 },
+    storageState: {
+      cookies: [],
+      origins: [{
+        origin: 'http://localhost:8080',
+        localStorage: [
+          { name: 'filoName',   value: name },
+          { name: 'filoAvatar', value: avatar },
+        ],
+      }],
+    },
+  });
   const page = await ctx.newPage();
-  await page.addInitScript(({ n, a }) => {
-    localStorage.setItem('filoName',   n);
-    localStorage.setItem('filoAvatar', a);
-  }, { n: name, a: avatar });
-  await page.goto(PONG);
-  console.log(`  ✓ ${name} opened ${PONG.split('/').pop()}`);
+  await page.goto(`${BASE_URL}?room=${room}`);
   return page;
 }
 
-/** Poll until both pages show the target screen id (or timeout ms). */
+/** Poll until all pages show the target screen (400 ms interval, up to timeout). */
 async function waitForScreen(pages, screenId, timeout = 25000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const results = await Promise.all(
-      pages.map(p => p.evaluate(id => document.getElementById(id)?.classList.contains('active'), screenId).catch(() => false))
+    const all = await Promise.all(
+      pages.map(p =>
+        p.evaluate(id => document.getElementById(id)?.classList.contains('active'), screenId)
+         .catch(() => false)
+      )
     );
-    if (results.every(Boolean)) return true;
+    if (all.every(Boolean)) return true;
     await sleep(400);
   }
   return false;
 }
 
-async function run() {
-  console.log('\n🏓 Room 5-6 Picklebol Simulation\n');
+/* ── core test suite ── */
+async function runSuite(browserName, launchFn, room) {
+  const results = [];
+  console.log(`\n${'─'.repeat(52)}`);
+  console.log(`  🌐  ${browserName.toUpperCase()}  (room ${room})`);
+  console.log(`${'─'.repeat(52)}`);
 
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  let browser;
+  try {
+    browser = await launchFn({ headless: true });
 
-  console.log('── Opening players at pong.html?room=98 (headless) ──\n');
-  const p1 = await openPlayer(browser, 'Kuya AD', '🕵️');
-  await sleep(800);
-  const p2 = await openPlayer(browser, 'Matt', '👱');
+    console.log(`  Opening Kuya AD + Matt at room ${room}…`);
+    const p1 = await openPlayer(browser, 'Kuya AD', '🕵️', room);
+    await sleep(800);
+    const p2 = await openPlayer(browser, 'Matt', '👱', room);
 
-  // ── Wait for PeerJS connection ───────────────────────────────────
-  console.log('\n⏳ Waiting for both players to reach s-game (up to 25s)...');
-  const connected = await waitForScreen([p1, p2], 's-game', 25000);
+    /* ── Wait for PeerJS connection ── */
+    console.log('  ⏳ Waiting for s-game (up to 25s)…');
+    const connected = await waitForScreen([p1, p2], 's-game', 25000);
 
-  if (!connected) {
-    // Capture what screen/state each player is on for diagnostics
-    for (const [pg, nm] of [[p1,'Kuya AD'],[p2,'Matt']]) {
-      const st = await pg.evaluate(() => ({
-        screen: [...document.querySelectorAll('.screen.active')].map(s=>s.id),
-        peerOpen: peer?.open, role: myRole
-      })).catch(() => null);
-      console.log(`  ${nm} state:`, JSON.stringify(st));
+    if (!connected) {
+      for (const [pg, nm] of [[p1,'Kuya AD'],[p2,'Matt']]) {
+        const st = await pg.evaluate(() => ({
+          screen: [...document.querySelectorAll('.screen.active')].map(s => s.id),
+          peerOpen: peer?.open, role: myRole,
+        })).catch(() => null);
+        console.log(`    ${nm} state:`, JSON.stringify(st));
+      }
+      assert(false, 'PeerJS connection established', 'timed out', results);
+      return results;
     }
-    console.log('\n⚠ PeerJS connection failed — ensure http server is running on :8080');
-    await browser.close(); return;
+
+    /* Freeze ball so it can't auto-score before our checks */
+    await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; });
+
+    const p1InGame = await p1.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
+    const p2InGame = await p2.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
+    assert(p1InGame, 'Kuya AD in game screen', '', results);
+    assert(p2InGame, 'Matt in game screen', '', results);
+
+    const p1Side = await p1.evaluate(() => mySide).catch(() => null);
+    const p2Side = await p2.evaluate(() => mySide).catch(() => null);
+    assert(p1Side === 'left' && p2Side === 'right', 'Host=left, Guest=right', `${p1Side}/${p2Side}`, results);
+
+    /* ── Guest name on host vs-display ── */
+    const vsText = await p1.evaluate(() => document.getElementById('vs-display')?.textContent || '').catch(() => '');
+    assert(vsText.includes('Matt'), 'Host vs-display shows guest name', vsText, results);
+
+    /* ── Score 5 points for left ── */
+    console.log('  🎯 Injecting 5 left-side scores…');
+    for (let i = 0; i < 5; i++) {
+      await p1.evaluate(() => { ball.x = 620; ball.y = 170; ball.vx = 8; ball.vy = 0; });
+      await sleep(450);
+    }
+    await sleep(1500);
+
+    const p1Sc = await p1.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
+    const p2Sc = await p2.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
+    console.log(`    Kuya AD scores: left=${p1Sc?.l} right=${p1Sc?.r}`);
+    console.log(`    Matt    scores: left=${p2Sc?.l} right=${p2Sc?.r}`);
+    assert((p1Sc?.l ?? 0) >= 5, 'Left score ≥ 5', String(p1Sc?.l), results);
+
+    /* ── Champion screen ── */
+    await waitForScreen([p1], 's-champ', 4000).catch(() => {});
+    const p1Champ = await p1.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
+    const p2Champ = await p2.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
+    assert(p1Champ || p2Champ, 'Champion screen shown after 5 wins', '', results);
+
+    /* ── Two-click rematch ── */
+    console.log('  🔄 Rematch handshake…');
+    await p1.locator('button', { hasText: /Rematch|🔄/ }).first().click();
+    console.log('    ✓ P1 clicked Rematch (1st)');
+    await sleep(2000);
+
+    const p1Waiting = await p1.evaluate(() =>
+      document.getElementById('s-champ')?.classList.contains('active') ||
+      document.getElementById('s-game')?.classList.contains('active')
+    ).catch(() => false);
+    assert(p1Waiting, 'P1 waiting after 1st Rematch click', '', results);
+
+    await p2.locator('button', { hasText: /Rematch|🔄/ }).first().click();
+    console.log('    ✓ P2 clicked Rematch (2nd)');
+
+    const rematchOk = await waitForScreen([p1, p2], 's-game', 8000);
+    await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; }).catch(() => {});
+    assert(rematchOk, 'Both back in game after rematch', '', results);
+    const scoresReset = await p1.evaluate(() => scores.left === 0 && scores.right === 0).catch(() => false);
+    assert(scoresReset, 'Scores reset to 0 after rematch', '', results);
+
+    /* ── Disconnect countdown cancellable ── */
+    console.log('  💥 Disconnect countdown cancel…');
+    await p1.evaluate(() => { onDrop(); });
+    await sleep(300);
+    await p1.evaluate(() => {
+      destroyPeer();
+      window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
+    });
+    await sleep(6500);
+    const p1OnLobby    = await p1.evaluate(() => document.getElementById('s-lobby')?.classList.contains('active')).catch(() => false);
+    const ivCleared    = await p1.evaluate(() => dropCountdownIv === null).catch(() => false);
+    assert(p1OnLobby, 'P1 on lobby after navigation during countdown', '', results);
+    assert(ivCleared,  'dropCountdownIv=null after destroyPeer', '', results);
+
+  } catch (err) {
+    console.log(`    ❌ Suite error: ${err.message}`);
+    results.push({ ok: false, label: 'Suite exception', detail: err.message });
+  } finally {
+    await browser?.close().catch(() => {});
   }
 
-  // Freeze ball immediately so it can't auto-score before our checks
-  await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; });
+  return results;
+}
 
-  const p1InGame = await p1.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
-  const p2InGame = await p2.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
-  assert(p1InGame, 'Kuya AD (host/left) in game screen');
-  assert(p2InGame, 'Matt (guest/right) in game screen');
+/* ── runner ── */
+async function run() {
+  console.log('\n🏓 Picklebol Cross-Browser Simulation\n');
+  console.log('Browsers: Chromium · Firefox · WebKit');
+  console.log('Rooms:    98 · 99 · 100  (isolated PEER_IDs)\n');
 
-  const p1Side = await p1.evaluate(() => mySide).catch(() => null);
-  const p2Side = await p2.evaluate(() => mySide).catch(() => null);
-  console.log(`\n🎯 Sides — Kuya AD: ${p1Side}, Matt: ${p2Side}`);
-  assert(p1Side === 'left' && p2Side === 'right', 'Host=left, Guest=right', `${p1Side}/${p2Side}`);
+  const suites = [
+    { name: 'Chromium', fn: chromium.launch.bind(chromium), room: 98 },
+    { name: 'Firefox',  fn: firefox.launch.bind(firefox),   room: 99 },
+    { name: 'WebKit',   fn: webkit.launch.bind(webkit),      room: 100 },
+  ];
 
-  // ── Bug fix: guest name visible on host's vs-display ────────────
-  const vsText = await p1.evaluate(() => document.getElementById('vs-display')?.textContent || '').catch(() => '');
-  assert(vsText.includes('Matt'), 'Host vs-display shows guest name', vsText);
-
-  // ── Score 5 points for left by placing ball past right boundary ──
-  console.log('\n🎯 Scoring 5 points for left via ball injection...');
-  for (let i = 0; i < 5; i++) {
-    await p1.evaluate(() => { ball.x = 620; ball.y = 170; ball.vx = 8; ball.vy = 0; });
-    await sleep(450);
+  const summary = [];
+  for (const { name, fn, room } of suites) {
+    const results = await runSuite(name, fn, room);
+    const p = results.filter(r => r.ok).length;
+    const f = results.filter(r => !r.ok).length;
+    summary.push({ name, passed: p, failed: f, total: results.length });
   }
-  await sleep(1500);
 
-  const p1Scores = await p1.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
-  const p2Scores = await p2.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
-  console.log(`  Kuya AD: left=${p1Scores?.l} right=${p1Scores?.r}`);
-  console.log(`  Matt:    left=${p2Scores?.l} right=${p2Scores?.r}`);
-  assert((p1Scores?.l ?? 0) >= 5, 'Left score ≥ 5', String(p1Scores?.l));
-
-  // ── Champion screen ───────────────────────────────────────────────
-  const champReached = await waitForScreen([p1], 's-champ', 4000).then(ok => ok || waitForScreen([p2], 's-champ', 1000));
-  const p1Champ = await p1.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
-  const p2Champ = await p2.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
-  assert(p1Champ || p2Champ, 'Champion screen shown after 5 wins');
-
-  // ── Bug fix: two-click rematch handshake ─────────────────────────
-  console.log('\n🔄 Rematch handshake...');
-  // Find and click the Rematch button on p1's champion screen
-  const rematchBtn1 = await p1.locator('button', { hasText: /Rematch|🔄/ }).first();
-  await rematchBtn1.click();
-  console.log('  ✓ P1 clicked Rematch (1st)');
-  await sleep(2000);
-
-  const p1Waiting = await p1.evaluate(() =>
-    document.getElementById('s-champ')?.classList.contains('active') ||
-    document.getElementById('s-game')?.classList.contains('active')
-  ).catch(() => false);
-  assert(p1Waiting, 'P1 waiting after 1st Rematch click');
-
-  const rematchBtn2 = await p2.locator('button', { hasText: /Rematch|🔄/ }).first();
-  await rematchBtn2.click();
-  console.log('  ✓ P2 clicked Rematch (2nd)');
-  // Poll until both are back in s-game, then freeze ball immediately
-  const rematchOk = await waitForScreen([p1, p2], 's-game', 8000);
-  await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; }).catch(() => {});
-  const p1Back = rematchOk;
-  const p2Back = rematchOk;
-  assert(p1Back && p2Back, 'Both back in game after rematch');
-  const scoresReset = await p1.evaluate(() => scores.left === 0 && scores.right === 0).catch(() => false);
-  assert(scoresReset, 'Scores reset to 0 after rematch');
-
-  // ── Bug fix: disconnect countdown cancellable ────────────────────
-  console.log('\n💥 Disconnect countdown is cancellable...');
-  await p1.evaluate(() => { onDrop(); });
-  await sleep(300);
-  await p1.evaluate(() => {
-    destroyPeer();
-    window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
-  });
-  await sleep(6500);
-  const p1OnLobby     = await p1.evaluate(() => document.getElementById('s-lobby')?.classList.contains('active')).catch(() => false);
-  const dropIvCleared = await p1.evaluate(() => dropCountdownIv === null).catch(() => false);
-  assert(p1OnLobby,     'P1 on lobby after navigation during countdown');
-  assert(dropIvCleared, 'dropCountdownIv=null (destroyPeer cancelled interval)');
-
-  // ── Results ──────────────────────────────────────────────────────
+  /* ── Final summary ── */
   console.log(`\n${'═'.repeat(52)}`);
-  console.log(`Results: ${passed} passed, ${failed} failed  (${passed + failed} total)`);
-  console.log(failed === 0 ? '🎉 ALL TESTS PASSED' : `⚠️  ${failed} test(s) failed`);
+  console.log('  CROSS-BROWSER SUMMARY');
+  console.log(`${'═'.repeat(52)}`);
+  let grandPass = 0, grandFail = 0;
+  for (const { name, passed, failed, total } of summary) {
+    const icon = failed === 0 ? '✅' : '❌';
+    console.log(`  ${icon}  ${name.padEnd(10)} ${passed}/${total} passed${failed ? `  (${failed} failed)` : ''}`);
+    grandPass += passed; grandFail += failed;
+  }
+  console.log(`${'─'.repeat(52)}`);
+  console.log(`  Total: ${grandPass} passed, ${grandFail} failed  (${grandPass + grandFail} assertions)`);
+  console.log(grandFail === 0 ? '\n  🎉 ALL BROWSERS PASSED\n' : `\n  ⚠️  ${grandFail} failure(s) across browsers\n`);
 }
 
 run().catch(err => {
-  console.error('\n❌ Sim error:', err.message);
+  console.error('\n❌ Runner error:', err.message);
   process.exit(1);
 });
