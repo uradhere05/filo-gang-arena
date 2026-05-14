@@ -280,7 +280,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-    <div class="app-version">v2.29</div>
+    <div class="app-version">v2.30</div>
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <script>
   /* ── Constants ── */
@@ -307,6 +307,9 @@
   let gameOver = false;
   let scores = { X: 0, O: 0 };
   let wantsRestart = false;
+  let dropCountdownIv = null;
+  let _reconnectTries = 0;
+  const MAX_RECONNECT = 8;
 
   /* ── Board ── */
   function initBoard() {
@@ -332,7 +335,7 @@
   }
 
   function updateCellCursors() {
-    const isMyTurn = currentTurn === myPiece && !gameOver && !over;
+    const isMyTurn = currentTurn === myPiece && !gameOver;
     document.querySelectorAll('.c5-cell:not(.taken)').forEach(c => {
       c.classList.toggle('not-your-turn', !isMyTurn);
     });
@@ -438,13 +441,13 @@
       });
       setTimeout(() => toast(`${myName} added to the leaderboard!`), 600);
     } else {
-      loadAndRenderLeaderboard(true);
+      setTimeout(() => loadAndRenderLeaderboard(true), 2000);
     }
   }
 
   /* ── Restart ── */
   function requestRestart() {
-    if (wantsRestart) { doRestart(); return; }
+    if (wantsRestart) { doRestart(); send({ type: 'restart-ok' }); return; }
     wantsRestart = true;
     send({ type: 'restart-req' });
     toast('Waiting for opponent to accept…');
@@ -453,6 +456,7 @@
   function requestRematch() {
     scores = { X: 0, O: 0 };
     refreshScores();
+    send({ type: 'score-reset' });
     requestRestart();
   }
 
@@ -570,6 +574,7 @@
     clearInterval(onlineInterval);
     onlineInterval = setInterval(loadOnlineUsers, 5000);
   }
+  function stopOnlinePoll() { clearInterval(onlineInterval); onlineInterval = null; }
   async function fetchOnlineNames() {
     const data = (await fetch(`${DB}/online.json`).then(r=>r.json()).catch(()=>({}))) || {};
     const now = Date.now();
@@ -690,17 +695,22 @@
     if (msg.type === 'start') {
       opponentName = msg.hostName;
       myPiece = 'O';
+      send({ type: 'guest-info', guestName: myName });
+      startGame();
+    }
+    if (msg.type === 'guest-info') {
+      opponentName = msg.guestName;
       startGame();
     }
     if (msg.type === 'move') {
       placeStone(msg.idx, currentTurn, true);
     }
+    if (msg.type === 'score-reset') { scores = { X: 0, O: 0 }; refreshScores(); }
     if (msg.type === 'restart-req') {
       if (wantsRestart) { doRestart(); send({ type: 'restart-ok' }); }
       else { wantsRestart = true; toast(`${opponentName} wants to play again! Click Play Again.`); }
     }
     if (msg.type === 'restart-ok') { doRestart(); }
-    if (msg.type === 'rematch') { scores = { X: 0, O: 0 }; refreshScores(); doRestart(); }
   }
 
   function wireConn() {
@@ -711,19 +721,21 @@
 
   /* ── Room entry ── */
   function enterRoom() {
+    _reconnectTries = 0;
     peer = new Peer(PEER_ID, PEER_CFG);
     peer.on('open', () => {
       myRole = 'host'; myPiece = 'X';
       writePresence('host');
       startWaitHeartbeat();
-      peer.on('disconnected', () => { try { peer.reconnect(); } catch {} });
+      peer.on('disconnected', () => {
+        if (++_reconnectTries <= MAX_RECONNECT) { try { peer.reconnect(); } catch {} }
+      });
       peer.on('connection', c => {
+        if (conn && conn.open) { c.close(); return; }
         conn = c; wireConn();
         conn.on('open', () => {
-          opponentName = '';
           send({ type: 'start', hostName: myName });
           writePresence('host');
-          startGame();
           startHeartbeat();
         });
       });
@@ -735,6 +747,7 @@
   }
 
   function joinRoom() {
+    _reconnectTries = 0;
     peer = new Peer(PEER_CFG);
     myRole = 'guest'; myPiece = 'O';
     writePresence('guest');
@@ -744,11 +757,13 @@
       toast('No host found — try again.');
       setTimeout(() => window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`, 2500);
     }, 12000);
-    peer.on('disconnected', () => { try { peer.reconnect(); } catch {} });
+    peer.on('disconnected', () => {
+      if (++_reconnectTries <= MAX_RECONNECT) { try { peer.reconnect(); } catch {} }
+    });
     peer.on('open', () => {
       conn = peer.connect(PEER_ID, { reliable: true, serialization: 'json' });
-      wireConn();
       conn.on('open', () => {
+        wireConn();
         clearTimeout(giveUp);
         writePresence('guest');
         startHeartbeat();
@@ -763,24 +778,28 @@
 
   /* ── Navigation ── */
   function leaveGame() {
+    clearInterval(dropCountdownIv); dropCountdownIv = null;
     if (myRole) clearPresence(myRole);
     destroyPeer();
     window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
   }
 
   function cancelGame() {
+    clearInterval(dropCountdownIv); dropCountdownIv = null;
     if (myRole) clearPresence(myRole);
     destroyPeer();
     window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
   }
 
   function goHome() {
+    clearInterval(dropCountdownIv); dropCountdownIv = null;
     if (myRole) clearPresence(myRole);
     destroyPeer();
     window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
   }
 
   function onDrop() {
+    clearInterval(dropCountdownIv);
     stopHeartbeat();
     if (myRole) { clearPresence(myRole); myRole = null; }
     gameOver = true;
@@ -788,10 +807,13 @@
     let secs = 5;
     const tick = () => {
       setStatus(`<span class="dt">Opponent disconnected — returning in ${secs}s</span>`);
-      if (secs-- <= 0) { clearInterval(iv); window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`; }
+      if (secs-- <= 0) {
+        clearInterval(dropCountdownIv); dropCountdownIv = null;
+        window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
+      }
     };
     tick();
-    const iv = setInterval(tick, 1000);
+    dropCountdownIv = setInterval(tick, 1000);
   }
 
   /* ── Boot ── */
