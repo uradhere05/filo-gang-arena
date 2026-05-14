@@ -457,7 +457,7 @@ async function pollNightActions(){
   // Civilian death predictions
   const aliveCivs=Object.keys(rolesMap).filter(n=>rolesMap[n]==='civilian'&&aliveMap[n]!==false);
   if(aliveCivs.length){
-    html+='<div style="opacity:.4;font-size:.6rem;letter-spacing:2px;text-transform:uppercase;margin:10px 0 5px">Civilian predictions — who dies tonight?</div>';
+    html+='<div style="opacity:.4;font-size:.6rem;letter-spacing:2px;text-transform:uppercase;margin:10px 0 5px">Civilian predictions — who is the murderer?</div>';
     aliveCivs.forEach(name=>{
       const s=suspectD?suspectD[encN(name)]:null;
       html+=`<div class="act-item ${s?'submitted':'pending'}">🕵️ <b>${escHtml(name)}</b>: ${s?`predicts <b>${escHtml(s)}</b>`:'Thinking…'}</div>`;
@@ -850,7 +850,7 @@ async function showNightUI(){
       <div class="phase-card night" style="padding:20px 16px;margin-bottom:12px">
         <div class="rr-icon">🌙</div>
         <div class="phase-title" style="font-size:1rem">Night Action</div>
-        <div class="phase-desc">Who do you think is the killer?</div>
+        <div class="phase-desc">Who do you think is the murderer?</div>
       </div>
       <div class="action-grid">${alive.filter(n=>n!==myName).map(n=>`
         <div class="ag-card" data-n="${escHtml(n)}" onclick="submitSuspect(this.dataset.n)">
