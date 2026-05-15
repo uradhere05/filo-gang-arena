@@ -18,11 +18,32 @@
  */
 'use strict';
 const { chromium } = require('playwright');
+const { execSync }  = require('child_process');
 
 const INDEX = 'http://localhost:8080/index.html';
 const MAFIA  = 'http://localhost:8080/mafia2.html';
 const DB     = 'https://filo-gang-tictactoe-default-rtdb.firebaseio.com';
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
+
+/* ── Screen layout: 5 col × 2 row, each window fills its cell ── */
+function getScreenSize() {
+  try {
+    const out = execSync("osascript -e 'tell application \"Finder\" to get bounds of window of desktop'").toString().trim();
+    const [,, w, h] = out.split(',').map(Number);
+    return { w, h };
+  } catch { return { w: 1440, h: 900 }; }
+}
+const { w: SCR_W, h: SCR_H } = getScreenSize();
+const COLS = 5, ROWS = 2;
+const WIN_W  = Math.floor(SCR_W / COLS);
+const WIN_H  = Math.floor(SCR_H / ROWS);
+const CHROME_H = 88; // browser chrome height (title bar + address bar)
+const VP_W   = WIN_W;
+const VP_H   = Math.max(320, WIN_H - CHROME_H);
+const POSITIONS = Array.from({ length: COLS * ROWS }, (_, i) => [
+  (i % COLS) * WIN_W,
+  Math.floor(i / COLS) * WIN_H,
+]);
 
 const fb = (path, method = 'GET', body) => fetch(
   `${DB}${path}.json`,
@@ -51,15 +72,9 @@ const PLAYERS = [
   { name: 'Shantelle',avatar: '👨‍🍳', role: 'civilian'     },
 ];
 
-// 5 col × 2 row grid
-const POSITIONS = [
-  [0,0],    [460,0],   [920,0],   [1380,0],  [1840,0],
-  [0,440],  [460,440], [920,440], [1380,440],[1840,440],
-];
-
 /* ── Helpers ── */
 async function openWindow(browser, name, x, y) {
-  const ctx  = await browser.newContext({ viewport: { width: 448, height: 430 } });
+  const ctx  = await browser.newContext({ viewport: { width: VP_W, height: VP_H } });
   const page = await ctx.newPage();
   await page.goto(`${INDEX}?name=${encodeURIComponent(name)}`);
   await page.evaluate((px, py) => window.moveTo(px, py), x, y).catch(() => {});
@@ -116,11 +131,13 @@ async function run() {
   assert(await fb('/mafia2/phase') === null, 'Firebase /mafia2 cleared');
 
   /* 1. Launch browser */
+  console.log(`🖥️  Screen ${SCR_W}×${SCR_H} → ${COLS}×${ROWS} grid · each window ${WIN_W}×${WIN_H} (viewport ${VP_W}×${VP_H})\n`);
+
   const browser = await chromium.launch({
     headless: false,
     channel:  'chrome',
     args: [
-      '--window-size=460,860',
+      `--window-size=${WIN_W},${WIN_H}`,
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
