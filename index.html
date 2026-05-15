@@ -606,7 +606,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-  <div class="app-version">v2.49</div>
+  <div class="app-version">v2.50</div>
 </div>
 
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
@@ -633,6 +633,7 @@
   let dropCountdownIv = null;
   let _reconnectTries = 0;
   const MAX_RECONNECT = 8;
+  let _giveUpTimer = null;
 
   const cells = document.querySelectorAll('.cell');
 
@@ -970,60 +971,87 @@
     conn = null; peer = null;
   }
 
+  /* ════════════════════════════════
+     ROOM ENTRY — Rooms 1–6
+  ════════════════════════════════ */
   function enterRoom(n) {
     if (!myName) { show('s-name'); return; }
-    lobbyErr(''); stopPresencePoll();
+    _abortJoin();
+    lobbyErr('');
+    stopPresencePoll();
     document.getElementById('code-display').textContent = 'Room ' + n;
     document.getElementById('room-hint').textContent = `Ask your friend to pick Room ${n}!`;
     show('s-wait');
+    _tryHost(n);
+  }
+
+  /* Clean up any in-flight join attempt — safe to call at any time. */
+  function _abortJoin() {
+    clearTimeout(_giveUpTimer); _giveUpTimer = null;
+    if (currentRoom && myRole) clearPresence(currentRoom, myRole);
+    currentRoom = null; myRole = null; myPiece = null;
+    _reconnectTries = 0;
+    destroyPeer();
+  }
+
+  function _tryHost(n) {
+    _reconnectTries = 0;
     peer = new Peer(PREFIX + n, PEER_CFG);
     peer.on('open', () => {
       myPiece = 'X'; currentRoom = n; myRole = 'host';
-      _reconnectTries = 0;
       writePresence(n, 'host');
-      peer.on('disconnected', () => { if (++_reconnectTries <= MAX_RECONNECT) { try { peer.reconnect(); } catch(_){} } });
-      peer.on('connection', c => {
-        if (conn && conn.open) { c.close(); return; } // reject 3rd-party connections
-        conn = c; wireConn();
-        conn.on('open', () => {
-          conn.send({ type: 'start', piece: 'O', hostName: myName });
-          writePresence(n, 'host'); startGame(); startHeartbeat();
-        });
-      });
+      peer.on('disconnected', _handlePeerDisconnect);
+      peer.on('connection', _onIncomingConnection);
     });
     peer.on('error', err => {
-      if (err.type === 'unavailable-id') { destroyPeer(); joinRoomN(n); }
-      else { destroyPeer(); lobbyErr('Connection error — try again.'); show('s-lobby'); startPresencePoll(); }
+      destroyPeer();
+      if (err.type === 'unavailable-id') { _tryGuest(n); }
+      else { currentRoom = null; myRole = null; _joinFailed('Connection error — try again.'); }
     });
   }
 
-  function joinRoomN(n) {
-    peer = new Peer(PEER_CFG);
+  function _onIncomingConnection(c) {
+    if (conn && conn.open) { c.close(); return; }
+    conn = c; wireConn();
+    conn.on('open', () => {
+      conn.send({ type: 'start', piece: 'O', hostName: myName });
+      writePresence(currentRoom, 'host');
+      startGame(); startHeartbeat();
+    });
+  }
+
+  function _tryGuest(n) {
     myPiece = 'O'; currentRoom = n; myRole = 'guest';
-    let cancelled = false;
     _reconnectTries = 0;
-    let giveUp = setTimeout(() => {
-      cancelled = true;
-      destroyPeer(); currentRoom = null; myRole = null;
-      lobbyErr('Room ' + n + ' has no host yet — try another room.');
-      show('s-lobby'); startPresencePoll();
-    }, 10000);
-    peer.on('disconnected', () => { if (!cancelled && ++_reconnectTries <= MAX_RECONNECT) { try { peer.reconnect(); } catch(_){} } });
+    peer = new Peer(PEER_CFG);
+    _giveUpTimer = setTimeout(() => {
+      _giveUpTimer = null;
+      _abortJoin();
+      _joinFailed(`Room ${n} has no host yet — try another room.`);
+    }, 15000);
     peer.on('open', () => {
-      if (cancelled) return;
+      if (!peer) return;
       conn = peer.connect(PREFIX + n, { reliable: true, serialization: 'json' });
       wireConn();
       conn.on('open', () => {
-        if (cancelled) return;
-        clearTimeout(giveUp); writePresence(n, 'guest'); startHeartbeat();
+        if (!conn) return;
+        clearTimeout(_giveUpTimer); _giveUpTimer = null;
+        writePresence(n, 'guest'); startHeartbeat();
       });
     });
+    peer.on('disconnected', _handlePeerDisconnect);
     peer.on('error', () => {
-      cancelled = true;
-      clearTimeout(giveUp); destroyPeer(); currentRoom = null; myRole = null;
-      lobbyErr('Could not join Room ' + n + ' — try again.');
-      show('s-lobby'); startPresencePoll();
+      _abortJoin();
+      _joinFailed(`Could not join Room ${n} — try again.`);
     });
+  }
+
+  function _handlePeerDisconnect() {
+    if (++_reconnectTries <= MAX_RECONNECT) { try { peer.reconnect(); } catch {} }
+  }
+
+  function _joinFailed(msg) {
+    lobbyErr(msg); show('s-lobby'); startPresencePoll();
   }
 
   function wireConn() { conn.on('data', handleData); conn.on('close', onDrop); conn.on('error', onDrop); }
@@ -1163,8 +1191,8 @@
 
   function cancelGame() {
     clearInterval(dropCountdownIv); dropCountdownIv = null;
-    if (currentRoom && myRole) { clearPresence(currentRoom, myRole); currentRoom = null; myRole = null; }
-    destroyPeer(); show('s-lobby'); startPresencePoll();
+    _abortJoin();
+    show('s-lobby'); startPresencePoll();
   }
 
   function onDrop() {
@@ -1210,6 +1238,14 @@
       fetch(`${DB}/online/${encodeURIComponent(myName)}.json`, { method: 'DELETE', keepalive: true });
       if (currentRoom && myRole)
         fetch(`${DB}/rooms/room-${currentRoom}/${myRole}.json`, { method: 'DELETE', keepalive: true });
+    }
+    // Release PeerJS broker ID so the next player can claim it immediately
+    if (peer) { try { peer.destroy(); } catch {} }
+  });
+
+  window.addEventListener('pageshow', e => {
+    if (e.persisted && document.getElementById('s-wait')?.classList.contains('active')) {
+      _abortJoin(); show('s-lobby'); startPresencePoll();
     }
   });
 
