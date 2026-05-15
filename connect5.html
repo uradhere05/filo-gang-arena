@@ -258,6 +258,11 @@
     <span class="cdot" id="cdot"></span>
     <span id="ctext">Connected</span>
   </div>
+  <div class="lb-section" style="margin-top:18px;">
+    <div class="lb-title">Weekly Leaderboard</div>
+    <div class="lb-week" id="lb-week-game"></div>
+    <div id="lb-list-game"><div class="lb-empty">Loading…</div></div>
+  </div>
 </div>
 
 <!-- ══ CHAMPION ══ -->
@@ -280,7 +285,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-    <div class="app-version">v2.36</div>
+    <div class="app-version">v2.37</div>
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 <script>
   /* ── Constants ── */
@@ -470,6 +475,7 @@
   function show(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
+    if (['s-wait', 's-game', 's-champ'].includes(id)) loadAndRenderLeaderboard();
   }
 
   /* ── Firebase — leaderboard ── */
@@ -501,11 +507,11 @@
   const LB_REFRESH_MS = 5000;
 
   function _setLbEls(html) {
-    const ids = ['lb-list-champ', 'lb-list-wait'];
+    const ids = ['lb-list-champ', 'lb-list-wait', 'lb-list-game'];
     for (const id of ids) { const el = document.getElementById(id); if (el) el.innerHTML = html; }
   }
   function _setWeekEls(label) {
-    const ids = ['lb-week-champ', 'lb-week-wait'];
+    const ids = ['lb-week-champ', 'lb-week-wait', 'lb-week-game'];
     for (const id of ids) { const el = document.getElementById(id); if (el) el.textContent = label; }
   }
 
