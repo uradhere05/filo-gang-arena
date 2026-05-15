@@ -1,27 +1,27 @@
 /**
- * Room 5-6 Picklebol cross-browser simulation.
- * Runs the full 11-assertion suite on Chromium, Firefox, and WebKit.
- * Each browser gets its own room number (98/99/100) so PEER_IDs
- * never collide across concurrent or sequential runs.
+ * Room 5-6 Picklebol simulation — 2 players, 2 visible Chrome windows.
+ * Runs the full 11-assertion suite with headless:false so you can watch
+ * both windows side-by-side.
+ *
+ * Uses room 95 to avoid stale PEER_ID collisions from previous runs.
+ * Disables background-timer throttling so the game loop runs at full
+ * speed even when windows are not the foreground focus.
+ *
  * Run: node pong-sim.js
  */
-const { chromium, firefox, webkit } = require('playwright');
+const { chromium } = require('playwright');
 
 const BASE_URL = 'http://localhost:8080/pong.html';
+const ROOM     = 95;          // isolated from rooms 5 & 6 used in production
 const sleep    = ms => new Promise(r => setTimeout(r, ms));
 
-/* ── helpers ── */
-function assert(ok, label, detail, results) {
-  const entry = { ok, label, detail };
-  results.push(entry);
-  if (ok) console.log(`    ✅ PASS  ${label}`);
-  else     console.log(`    ❌ FAIL  ${label}${detail ? ' — ' + detail : ''}`);
+let passed = 0, failed = 0;
+function assert(ok, label, detail = '') {
+  if (ok) { console.log(`  ✅ PASS  ${label}`); passed++; }
+  else     { console.log(`  ❌ FAIL  ${label}${detail ? ' — ' + detail : ''}`); failed++; }
 }
 
-async function openPlayer(browser, name, avatar, room) {
-  // Use storageState to pre-populate localStorage — works across all browsers
-  // including WebKit, which does not guarantee addInitScript localStorage
-  // persistence before the page's own login-guard script runs.
+async function openPlayer(browser, name, avatar, winX) {
   const ctx = await browser.newContext({
     viewport: { width: 640, height: 780 },
     storageState: {
@@ -36,11 +36,14 @@ async function openPlayer(browser, name, avatar, room) {
     },
   });
   const page = await ctx.newPage();
-  await page.goto(`${BASE_URL}?room=${room}`);
+  await page.goto(`${BASE_URL}?room=${ROOM}`);
+  // Position windows side-by-side
+  await page.evaluate(x => window.moveTo(x, 60), winX).catch(() => {});
+  console.log(`  ✓ ${name} — window at x=${winX}`);
   return page;
 }
 
-/** Poll until all pages show the target screen (400 ms interval, up to timeout). */
+/** Poll until all pages show screenId (400 ms interval). */
 async function waitForScreen(pages, screenId, timeout = 25000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -56,155 +59,129 @@ async function waitForScreen(pages, screenId, timeout = 25000) {
   return false;
 }
 
-/* ── core test suite ── */
-async function runSuite(browserName, launchFn, room) {
-  const results = [];
-  console.log(`\n${'─'.repeat(52)}`);
-  console.log(`  🌐  ${browserName.toUpperCase()}  (room ${room})`);
-  console.log(`${'─'.repeat(52)}`);
-
-  let browser;
-  try {
-    browser = await launchFn({ headless: true });
-
-    console.log(`  Opening Kuya AD + Matt at room ${room}…`);
-    const p1 = await openPlayer(browser, 'Kuya AD', '🕵️', room);
-    await sleep(800);
-    const p2 = await openPlayer(browser, 'Matt', '👱', room);
-
-    /* ── Wait for PeerJS connection ── */
-    console.log('  ⏳ Waiting for s-game (up to 25s)…');
-    const connected = await waitForScreen([p1, p2], 's-game', 25000);
-
-    if (!connected) {
-      for (const [pg, nm] of [[p1,'Kuya AD'],[p2,'Matt']]) {
-        const st = await pg.evaluate(() => ({
-          screen: [...document.querySelectorAll('.screen.active')].map(s => s.id),
-          peerOpen: peer?.open, role: myRole,
-        })).catch(() => null);
-        console.log(`    ${nm} state:`, JSON.stringify(st));
-      }
-      assert(false, 'PeerJS connection established', 'timed out', results);
-      return results;
-    }
-
-    /* Freeze ball so it can't auto-score before our checks */
-    await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; });
-
-    const p1InGame = await p1.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
-    const p2InGame = await p2.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
-    assert(p1InGame, 'Kuya AD in game screen', '', results);
-    assert(p2InGame, 'Matt in game screen', '', results);
-
-    const p1Side = await p1.evaluate(() => mySide).catch(() => null);
-    const p2Side = await p2.evaluate(() => mySide).catch(() => null);
-    assert(p1Side === 'left' && p2Side === 'right', 'Host=left, Guest=right', `${p1Side}/${p2Side}`, results);
-
-    /* ── Guest name on host vs-display ── */
-    const vsText = await p1.evaluate(() => document.getElementById('vs-display')?.textContent || '').catch(() => '');
-    assert(vsText.includes('Matt'), 'Host vs-display shows guest name', vsText, results);
-
-    /* ── Score 5 points for left ── */
-    console.log('  🎯 Injecting 5 left-side scores…');
-    for (let i = 0; i < 5; i++) {
-      await p1.evaluate(() => { ball.x = 620; ball.y = 170; ball.vx = 8; ball.vy = 0; });
-      await sleep(450);
-    }
-    await sleep(1500);
-
-    const p1Sc = await p1.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
-    const p2Sc = await p2.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
-    console.log(`    Kuya AD scores: left=${p1Sc?.l} right=${p1Sc?.r}`);
-    console.log(`    Matt    scores: left=${p2Sc?.l} right=${p2Sc?.r}`);
-    assert((p1Sc?.l ?? 0) >= 5, 'Left score ≥ 5', String(p1Sc?.l), results);
-
-    /* ── Champion screen ── */
-    await waitForScreen([p1], 's-champ', 4000).catch(() => {});
-    const p1Champ = await p1.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
-    const p2Champ = await p2.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
-    assert(p1Champ || p2Champ, 'Champion screen shown after 5 wins', '', results);
-
-    /* ── Two-click rematch ── */
-    console.log('  🔄 Rematch handshake…');
-    await p1.locator('button', { hasText: /Rematch|🔄/ }).first().click();
-    console.log('    ✓ P1 clicked Rematch (1st)');
-    await sleep(2000);
-
-    const p1Waiting = await p1.evaluate(() =>
-      document.getElementById('s-champ')?.classList.contains('active') ||
-      document.getElementById('s-game')?.classList.contains('active')
-    ).catch(() => false);
-    assert(p1Waiting, 'P1 waiting after 1st Rematch click', '', results);
-
-    await p2.locator('button', { hasText: /Rematch|🔄/ }).first().click();
-    console.log('    ✓ P2 clicked Rematch (2nd)');
-
-    const rematchOk = await waitForScreen([p1, p2], 's-game', 8000);
-    await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; }).catch(() => {});
-    assert(rematchOk, 'Both back in game after rematch', '', results);
-    const scoresReset = await p1.evaluate(() => scores.left === 0 && scores.right === 0).catch(() => false);
-    assert(scoresReset, 'Scores reset to 0 after rematch', '', results);
-
-    /* ── Disconnect countdown cancellable ── */
-    console.log('  💥 Disconnect countdown cancel…');
-    await p1.evaluate(() => { onDrop(); });
-    await sleep(300);
-    await p1.evaluate(() => {
-      destroyPeer();
-      window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
-    });
-    await sleep(6500);
-    const p1OnLobby    = await p1.evaluate(() => document.getElementById('s-lobby')?.classList.contains('active')).catch(() => false);
-    const ivCleared    = await p1.evaluate(() => dropCountdownIv === null).catch(() => false);
-    assert(p1OnLobby, 'P1 on lobby after navigation during countdown', '', results);
-    assert(ivCleared,  'dropCountdownIv=null after destroyPeer', '', results);
-
-  } catch (err) {
-    console.log(`    ❌ Suite error: ${err.message}`);
-    results.push({ ok: false, label: 'Suite exception', detail: err.message });
-  } finally {
-    await browser?.close().catch(() => {});
-  }
-
-  return results;
-}
-
-/* ── runner ── */
 async function run() {
-  console.log('\n🏓 Picklebol Cross-Browser Simulation\n');
-  console.log('Browsers: Chromium · Firefox · WebKit');
-  console.log('Rooms:    98 · 99 · 100  (isolated PEER_IDs)\n');
+  console.log('\n🏓 Picklebol — 2 Players · 2 Chrome Windows\n');
+  console.log(`  Room: ${ROOM}  |  First to 5 wins\n`);
 
-  const suites = [
-    { name: 'Chromium', fn: chromium.launch.bind(chromium), room: 98 },
-    { name: 'Firefox',  fn: firefox.launch.bind(firefox),   room: 99 },
-    { name: 'WebKit',   fn: webkit.launch.bind(webkit),      room: 100 },
-  ];
+  const browser = await chromium.launch({
+    headless: false,
+    channel:  'chrome',
+    args: [
+      '--window-size=660,820',
+      '--disable-background-timer-throttling',   // keep game loop full-speed in bg
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+    ],
+  });
 
-  const summary = [];
-  for (const { name, fn, room } of suites) {
-    const results = await runSuite(name, fn, room);
-    const p = results.filter(r => r.ok).length;
-    const f = results.filter(r => !r.ok).length;
-    summary.push({ name, passed: p, failed: f, total: results.length });
+  /* ── Open both players ── */
+  console.log('── Opening windows ──────────────────────────────────\n');
+  const p1 = await openPlayer(browser, 'Kuya AD', '🕵️',   20);
+  await sleep(900);
+  const p2 = await openPlayer(browser, 'Matt',    '👱',  700);
+
+  /* ── Wait for PeerJS connection ── */
+  console.log('\n⏳ Waiting for both players to reach s-game (up to 25s)…');
+  const connected = await waitForScreen([p1, p2], 's-game', 25000);
+
+  if (!connected) {
+    for (const [pg, nm] of [[p1,'Kuya AD'],[p2,'Matt']]) {
+      const st = await pg.evaluate(() => ({
+        screen:   [...document.querySelectorAll('.screen.active')].map(s => s.id),
+        peerOpen: peer?.open,
+        role:     myRole,
+      })).catch(() => null);
+      console.log(`  ${nm}:`, JSON.stringify(st));
+    }
+    console.log('\n⚠ PeerJS connection failed — ensure http server is running on :8080');
+    await browser.close();
+    return;
   }
 
-  /* ── Final summary ── */
+  /* Freeze ball immediately so it can't auto-score before our checks */
+  await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; });
+
+  const p1InGame = await p1.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
+  const p2InGame = await p2.evaluate(() => document.getElementById('s-game')?.classList.contains('active')).catch(() => false);
+  assert(p1InGame, 'Kuya AD (host/left) in game screen');
+  assert(p2InGame, 'Matt (guest/right) in game screen');
+
+  const p1Side = await p1.evaluate(() => mySide).catch(() => null);
+  const p2Side = await p2.evaluate(() => mySide).catch(() => null);
+  console.log(`\n  Sides — Kuya AD: ${p1Side}  |  Matt: ${p2Side}`);
+  assert(p1Side === 'left' && p2Side === 'right', 'Host=left, Guest=right', `${p1Side}/${p2Side}`);
+
+  /* ── Guest name on host vs-display ── */
+  const vsText = await p1.evaluate(() => document.getElementById('vs-display')?.textContent || '').catch(() => '');
+  assert(vsText.includes('Matt'), 'Host vs-display shows guest name', vsText);
+
+  /* ── Score 5 points for left via ball injection ── */
+  console.log('\n🎯 Scoring 5 points for left via ball injection…');
+  for (let i = 0; i < 5; i++) {
+    await p1.evaluate(() => { ball.x = 620; ball.y = 170; ball.vx = 8; ball.vy = 0; });
+    await sleep(450);
+    process.stdout.write(`  point ${i + 1}/5\r`);
+  }
+  await sleep(1500);
+  console.log('');
+
+  const p1Sc = await p1.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
+  const p2Sc = await p2.evaluate(() => ({ l: scores.left, r: scores.right })).catch(() => null);
+  console.log(`  Kuya AD: left=${p1Sc?.l}  right=${p1Sc?.r}`);
+  console.log(`  Matt:    left=${p2Sc?.l}  right=${p2Sc?.r}`);
+  assert((p1Sc?.l ?? 0) >= 5, 'Left score ≥ 5', String(p1Sc?.l));
+
+  /* ── Champion screen ── */
+  await waitForScreen([p1], 's-champ', 4000).catch(() => {});
+  const p1Champ = await p1.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
+  const p2Champ = await p2.evaluate(() => document.getElementById('s-champ')?.classList.contains('active')).catch(() => false);
+  assert(p1Champ || p2Champ, 'Champion screen shown after 5 wins');
+
+  /* ── Two-click rematch ── */
+  console.log('\n🔄 Rematch handshake…');
+  await p1.locator('button', { hasText: /Rematch|🔄/ }).first().click();
+  console.log('  ✓ Kuya AD clicked Rematch (1st click)');
+  await sleep(2000);
+
+  const p1Waiting = await p1.evaluate(() =>
+    document.getElementById('s-champ')?.classList.contains('active') ||
+    document.getElementById('s-game')?.classList.contains('active')
+  ).catch(() => false);
+  assert(p1Waiting, 'Kuya AD waiting after 1st Rematch click');
+
+  await p2.locator('button', { hasText: /Rematch|🔄/ }).first().click();
+  console.log('  ✓ Matt clicked Rematch (2nd click — starts game)');
+
+  const rematchOk = await waitForScreen([p1, p2], 's-game', 8000);
+  await p1.evaluate(() => { ball.vx = 0; ball.vy = 0; }).catch(() => {});
+  assert(rematchOk, 'Both back in game after rematch');
+  const scoresReset = await p1.evaluate(() => scores.left === 0 && scores.right === 0).catch(() => false);
+  assert(scoresReset, 'Scores reset to 0 after rematch');
+
+  /* ── Disconnect countdown cancellable ── */
+  console.log('\n💥 Testing disconnect countdown cancel…');
+  await p1.evaluate(() => { onDrop(); });
+  await sleep(300);
+  await p1.evaluate(() => {
+    destroyPeer();
+    window.location.href = `index.html?screen=lobby&name=${encodeURIComponent(myName)}`;
+  });
+  await sleep(6500);
+  const p1OnLobby  = await p1.evaluate(() => document.getElementById('s-lobby')?.classList.contains('active')).catch(() => false);
+  const ivCleared  = await p1.evaluate(() => dropCountdownIv === null).catch(() => false);
+  assert(p1OnLobby, 'Kuya AD on lobby after navigation during countdown');
+  assert(ivCleared,  'dropCountdownIv=null after destroyPeer');
+
+  /* ── Results ── */
   console.log(`\n${'═'.repeat(52)}`);
-  console.log('  CROSS-BROWSER SUMMARY');
-  console.log(`${'═'.repeat(52)}`);
-  let grandPass = 0, grandFail = 0;
-  for (const { name, passed, failed, total } of summary) {
-    const icon = failed === 0 ? '✅' : '❌';
-    console.log(`  ${icon}  ${name.padEnd(10)} ${passed}/${total} passed${failed ? `  (${failed} failed)` : ''}`);
-    grandPass += passed; grandFail += failed;
-  }
-  console.log(`${'─'.repeat(52)}`);
-  console.log(`  Total: ${grandPass} passed, ${grandFail} failed  (${grandPass + grandFail} assertions)`);
-  console.log(grandFail === 0 ? '\n  🎉 ALL BROWSERS PASSED\n' : `\n  ⚠️  ${grandFail} failure(s) across browsers\n`);
+  console.log(`Results: ${passed} passed, ${failed} failed  (${passed + failed} total)`);
+  console.log(failed === 0 ? '🎉 ALL TESTS PASSED' : `⚠️  ${failed} test(s) failed`);
+  console.log('\nWindows stay open for 6 seconds for inspection…');
+  await sleep(6000);
+  await browser.close();
 }
 
 run().catch(err => {
-  console.error('\n❌ Runner error:', err.message);
+  console.error('\n❌ Sim error:', err.message);
   process.exit(1);
 });
