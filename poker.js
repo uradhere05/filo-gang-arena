@@ -871,14 +871,14 @@ async function pollGameState(){
     }
     if(potD!=null)pot=potD;
     if(chipsD)Object.entries(chipsD).forEach(([k,v])=>{chipsMap[decN(k)]=v;});
-    if(foldedD)Object.entries(foldedD).forEach(([k,v])=>{foldedMap[decN(k)]=v;});
-    if(allInD)Object.entries(allInD).forEach(([k,v])=>{allInMap[decN(k)]=v;});
+    foldedMap=foldedD?Object.fromEntries(Object.entries(foldedD).map(([k,v])=>[decN(k),v])):{};
+    allInMap=allInD?Object.fromEntries(Object.entries(allInD).map(([k,v])=>[decN(k),v])):{};
     if(avsD)Object.entries(avsD).forEach(([k,v])=>{avatarsMap[decN(k)]=v;});
     if(commD)for(let i=0;i<5;i++) communityCards[i]=commD[i]||null;
     if(betD){
       currentBet=betD.current||0;
       betOn=betD.on||'';
-      if(betD.street)Object.entries(betD.street).forEach(([k,v])=>{betStreetMap[decN(k)]=v;});
+      betStreetMap=betD.street?Object.fromEntries(Object.entries(betD.street).map(([k,v])=>[decN(k),v])):{};
     }
     renderCommunityCards();
     renderStatusRow();
