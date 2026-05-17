@@ -190,15 +190,19 @@
       backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
       border: 1px solid rgba(50,180,80,0.25);
       border-radius: 16px; padding: 18px 12px; text-align: center;
-      cursor: not-allowed; pointer-events: none; position: relative; overflow: hidden;
+      cursor: pointer; position: relative; overflow: hidden;
       box-shadow: 0 4px 28px rgba(0,0,0,0.5), inset 0 1px 0 rgba(80,200,100,0.07);
+      transition: transform 300ms var(--ease-expo), border-color 300ms ease, box-shadow 300ms ease;
+      -webkit-tap-highlight-color: transparent; will-change: transform;
     }
+    .room-card-poker:hover { border-color: rgba(76,175,80,0.65); box-shadow: 0 0 0 1px rgba(50,180,80,0.28), 0 10px 48px rgba(0,120,40,0.28), inset 0 1px 0 rgba(80,220,100,0.16); }
+    .room-card-poker:hover::after { opacity: 1; }
+    .room-card-poker:active { transform: scale(0.95) !important; }
     .room-card-poker::before { content: '♠  ♣  ♥  ♦'; position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%); font-size: 0.6rem; letter-spacing: 3px; opacity: 0.09; pointer-events: none; white-space: nowrap; }
-    .room-card-poker::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 80% 55% at 50% 0%, rgba(60,200,80,0.07) 0%, transparent 70%); pointer-events: none; }
+    .room-card-poker::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 80% 55% at 50% 0%, rgba(60,200,80,0.07) 0%, transparent 70%); pointer-events: none; opacity: 0; transition: opacity 300ms ease; }
     .poker-num   { font-family: 'Orbitron', sans-serif; font-size: 2rem; font-weight: 900; line-height: 1; color: #4caf50; text-shadow: 0 0 18px rgba(76,175,80,0.5); }
     .poker-title { font-size: 0.65rem; letter-spacing: 1px; text-transform: uppercase; color: #a5d6a7; opacity: 0.88; margin-top: 5px; }
     .poker-sub   { font-size: 0.56rem; letter-spacing: 2px; text-transform: uppercase; color: #81c784; opacity: 0.48; margin-top: 2px; }
-    .poker-cs    { display: inline-block; margin-top: 7px; background: rgba(255,200,0,0.1); border: 1px solid rgba(255,200,0,0.32); border-radius: 20px; padding: 3px 10px; font-size: 0.58rem; letter-spacing: 2px; font-weight: 700; color: var(--gold); text-transform: uppercase; }
 
     /* ── Mafia ── */
     .room-card-mafia {
@@ -492,11 +496,11 @@
     <div class="room-card" onclick="window.location.href='pong.html?room=6'">
       <div class="rn">6</div><div class="rg">🏓 Pickelbol</div><div class="rl" id="rp-6">Pickelbol Game</div>
     </div>
-    <div class="room-card-poker">
+    <div class="room-card-poker" onclick="window.location.href='poker.html'">
       <div class="poker-num">7</div>
       <div class="poker-title">🃏 Texas Hold'em</div>
       <div class="poker-sub">Poker</div>
-      <div><span class="poker-cs">🔜 Coming Soon</span></div>
+      <div class="rl" id="rp-7">Room Open</div>
     </div>
     <div class="room-card room-card-mafia" onclick="window.location.href='mafia2.html'">
       <div class="mafia-num">8</div>
@@ -606,7 +610,7 @@
 
 <div class="credits">
   <footer>Created by ADML &mdash; 2026</footer>
-  <div class="app-version">v2.59</div>
+  <div class="app-version">v2.61</div>
 </div>
 
 <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
@@ -902,6 +906,19 @@
       } else {
         el.textContent = `Room ${n}`; el.className = 'rl';
         card && card.classList.remove('full'); card && card.classList.remove('waiting');
+      }
+    }
+    // Room 7 — poker lobby presence
+    const r7el = document.getElementById('rp-7');
+    if (r7el) {
+      const r7 = (data && data['room-7']) || {};
+      const r7lobby = r7.lobby || {};
+      const activePlayers = Object.values(r7lobby).filter(p => p?.ts && now - p.ts < ONLINE_STALE);
+      if (activePlayers.length > 0) {
+        r7el.innerHTML = `<span class="rp-waiting">${activePlayers.length} in lobby…</span>`;
+      } else {
+        r7el.textContent = 'Room Open';
+        r7el.className = 'rl';
       }
     }
   }
