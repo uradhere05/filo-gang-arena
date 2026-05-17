@@ -166,6 +166,136 @@ function bestOf7(cards7){
 const HAND_NAMES=['High Card','One Pair','Two Pair','Three of a Kind','Straight','Flush','Full House','Four of a Kind','Straight Flush'];
 function handName(score){return HAND_NAMES[score>>20]||'High Card';}
 
+/* ─── Lobby ─── */
+async function enterLobby(){
+  amReady=false;
+  show('s-lobby');
+  await writeLobbyPresence();
+  startLobbyPolling();
+}
+
+async function writeLobbyPresence(){
+  await Promise.all([
+    fb('PUT',`/poker2/lobby/${encN(myName)}`,{name:myName,ts:Date.now(),ready:amReady,avatar:myAvatar}),
+    fb('PUT',`/online/${encodeURIComponent(myName)}`,{ts:Date.now()}),
+    fb('PUT',`/rooms/room-7/lobby/${encN(myName)}`,{name:myName,ts:Date.now()}),
+  ]);
+}
+
+function startLobbyPolling(){
+  stopIvs();
+  lobbyTick();
+  ivs.push(setInterval(lobbyTick,2000));
+  ivs.push(setInterval(writeLobbyPresence,20000));
+}
+
+async function lobbyTick(){
+  if(!document.getElementById('s-lobby').classList.contains('active'))return;
+  if(_lobbyRunning)return;_lobbyRunning=true;
+  try{
+    const[lobbyD,hostD,phaseD,chipsD]=await Promise.all([
+      fb('GET','/poker2/lobby'),fb('GET','/poker2/host'),
+      fb('GET','/poker2/phase'),fb('GET','/poker2/chips'),
+    ]);
+    if(!document.getElementById('s-lobby').classList.contains('active'))return;
+    if(phaseD&&phaseD!=='lobby'&&phaseD!=='reset'){
+      stopIvs();
+      isHost=hostD===myName;hostName=hostD||'';
+      if(isHost){await reloadDealerState();reconnectDealer(phaseD);}
+      else{show('s-player');startPlayerPolling();}
+      return;
+    }
+    if(chipsD)Object.entries(chipsD).forEach(([k,v])=>{chipsMap[decN(k)]=v;});
+    hostName=hostD||'';
+    lobbyPlayers=lobbyD||{};
+    Object.values(lobbyPlayers).forEach(p=>{if(p?.name&&p.avatar)avatarsMap[p.name]=p.avatar;});
+    renderLobbyUI();
+  }finally{_lobbyRunning=false;}
+}
+
+function renderLobbyUI(){
+  const now=Date.now();
+  const players=Object.values(lobbyPlayers)
+    .filter(p=>p?.name&&now-p.ts<STALE_MS)
+    .sort((a,b)=>a.name.localeCompare(b.name));
+  const readyCount=players.filter(p=>p.ready).length;
+  document.getElementById('lb-count').textContent=
+    `Lobby — ${players.length} player${players.length!==1?'s':''} · ${readyCount} ready`;
+  document.getElementById('lb-players').innerHTML=players.length
+    ?players.map(p=>`<div class="lp-row${p.ready?' is-ready':''}">
+        <span class="lp-av">${getAvatar(p.name)}</span>
+        <span class="lp-name">${escHtml(p.name)}${p.name===hostName?' 🃏':''}</span>
+        <span class="lp-chips">${chipsMap[p.name]!=null?fmtChips(chipsMap[p.name]):''}</span>
+        ${p.ready?'<span style="font-size:.75rem">✅</span>':''}
+      </div>`).join('')
+    :'<div style="opacity:.35;font-size:.8rem;text-align:center;padding:16px">Waiting for players…</div>';
+
+  const hbar=document.getElementById('lb-host-bar');
+  if(hostName===myName){isHost=true;hbar.innerHTML='<div class="host-badge">🃏 You are the Dealer</div>';}
+  else if(hostName){hbar.innerHTML=`<div style="font-size:.75rem;opacity:.55">🃏 ${escHtml(hostName)} is Dealer</div>`;}
+  else{hbar.innerHTML='';}
+
+  document.getElementById('lb-claim-btn').style.display=hostName?'none':'';
+  const rBtn=document.getElementById('lb-ready-btn');
+  rBtn.textContent=amReady?'⬜ Cancel Ready':'✅ Ready Up';
+  rBtn.className='btn w100'+(amReady?' btn-secondary':' btn-primary');
+
+  const readyPlayers=players.filter(p=>p.name!==hostName&&p.ready);
+  const canStart=isHost&&readyPlayers.length>=MIN_PLAYERS;
+  const startBtn=document.getElementById('lb-start-btn');
+  startBtn.style.display=canStart?'':'none';
+  if(canStart)startBtn.textContent=`▶ Start Game (${readyPlayers.length} players)`;
+}
+
+async function toggleReady(){
+  amReady=!amReady;
+  await fb('PUT',`/poker2/lobby/${encN(myName)}`,{name:myName,ts:Date.now(),ready:amReady,avatar:myAvatar});
+  renderLobbyUI();
+}
+
+async function claimDealer(){
+  const cur=await fb('GET','/poker2/host');
+  if(cur){toast(`${cur} is already the Dealer`);return;}
+  await fb('PUT','/poker2/host',myName);
+  isHost=true;hostName=myName;
+  lobbyTick();
+}
+
+async function hostStartSession(){
+  const freshLobby=await fb('GET','/poker2/lobby')||{};
+  const now=Date.now();
+  const readyPlayers=Object.values(freshLobby)
+    .filter(p=>p?.name&&p.name!==hostName&&p.ready&&now-p.ts<STALE_MS)
+    .map(p=>p.name);
+  if(readyPlayers.length<MIN_PLAYERS){toast('Need at least 2 ready players');return;}
+
+  const chipsInit={};
+  readyPlayers.forEach(n=>{
+    chipsInit[encN(n)]=STARTING_CHIPS;
+    chipsMap[n]=STARTING_CHIPS;
+    if(freshLobby[encN(n)]?.avatar)avatarsMap[n]=freshLobby[encN(n)].avatar;
+  });
+  await Promise.all([
+    fb('PUT','/poker2/chips',chipsInit),
+    fb('PUT','/poker2/phase','lobby'),
+    fb('PUT','/poker2/round',0),
+    fb('DELETE','/poker2/hands'),
+    fb('DELETE','/poker2/community'),
+    fb('DELETE','/poker2/communityFull'),
+    fb('DELETE','/poker2/folded'),
+    fb('DELETE','/poker2/allIn'),
+    fb('DELETE','/poker2/bet'),
+    fb('PUT','/poker2/pot',0),
+    fb('PUT','/poker2/dealerPos',0),
+    fb('PUT','/poker2/avatars',Object.fromEntries(readyPlayers.filter(n=>avatarsMap[n]).map(n=>[encN(n),avatarsMap[n]]))),
+  ]);
+  playersInHand=readyPlayers;
+  dealerPos=-1;
+  stopIvs();
+  show('s-dealer');
+  renderDealerConsole('lobby');
+}
+
 window.addEventListener('beforeunload',()=>{
   if(myName){
     fetch(`${DB}/online/${encodeURIComponent(myName)}.json`,{method:'DELETE',keepalive:true});
