@@ -278,6 +278,7 @@ async function hostStartSession(orderedPlayers){
     fb('DELETE','/poker2/bet'),
     fb('PUT','/poker2/pot',0),
     fb('PUT','/poker2/dealerPos',0),
+    fb('PUT','/poker2/players',orderedPlayers),
     fb('PUT','/poker2/avatars',Object.fromEntries(
       orderedPlayers.filter(n=>avatarsMap[n]).map(n=>[encN(n),avatarsMap[n]])
     )),
@@ -747,9 +748,13 @@ function seatDragOver(e,i){
 }
 function seatDrop(e,i){
   e.preventDefault();
-  if(_dragFrom===-1||i===_dragFrom)return;
-  const moved=seatOrder.splice(_dragFrom,1)[0];
-  seatOrder.splice(i,0,moved);
+  const from=_dragFrom;
+  _dragFrom=-1;
+  if(from===-1||i===from)return;
+  const arr=[...seatOrder];
+  const[moved]=arr.splice(from,1);
+  arr.splice(i,0,moved);
+  seatOrder=arr;
   renderSeatList();
 }
 function seatDragEnd(){
@@ -781,12 +786,15 @@ function touchSeatEnd(){
   let dropIdx=-1;
   rows.forEach(r=>{if(r.classList.contains('drag-over'))dropIdx=+r.dataset.idx;});
   rows.forEach(r=>r.classList.remove('dragging','drag-over'));
-  if(dropIdx!==-1&&dropIdx!==_touchDragIdx){
-    const moved=seatOrder.splice(_touchDragIdx,1)[0];
-    seatOrder.splice(dropIdx,0,moved);
+  const from=_touchDragIdx;
+  _touchDragIdx=-1;
+  if(dropIdx!==-1&&dropIdx!==from){
+    const arr=[...seatOrder];
+    const[moved]=arr.splice(from,1);
+    arr.splice(dropIdx,0,moved);
+    seatOrder=arr;
     renderSeatList();
   }
-  _touchDragIdx=-1;
 }
 
 async function confirmSeats(){
