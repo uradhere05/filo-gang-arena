@@ -185,6 +185,16 @@ async function runRoom(browser, room, col) {
   }).catch(() => ({ ok: false, h: 0, fs: 'err' }));
   assert(spinInfo.ok, `SpinnerFix/R${n}: spinner not squished (h=${spinInfo.h?.toFixed(1)}px, flex-shrink=${spinInfo.fs})`);
 
+  /* ── CancelFix: cancel button must not be squished by flex-shrink ── */
+  const cancelInfo = await hPage.evaluate(() => {
+    const b = document.querySelector('#s-wait .btn-danger');
+    if (!b) return { ok: false, h: 0, fs: 'missing' };
+    const r = b.getBoundingClientRect();
+    const cs = getComputedStyle(b);
+    return { ok: r.height >= 30 && cs.flexShrink === '0', h: r.height, fs: cs.flexShrink };
+  }).catch(() => ({ ok: false, h: 0, fs: 'err' }));
+  assert(cancelInfo.ok, `CancelFix/R${n}: cancel button not squished (h=${cancelInfo.h?.toFixed(1)}px, flex-shrink=${cancelInfo.fs})`);
+
   // Wait until host peer is actually registered on broker (peer.open=true)
   // s-wait appears before peer.on('open') fires — connecting too soon → unavailable race
   await hPage.evaluate(() => new Promise(res => {
@@ -417,6 +427,7 @@ async function run() {
   console.log('  T9  Win recorded in Firebase leaderboard');
   console.log('  T10 Rematch: both back to s-game, scores=0');
   console.log('  SpinnerFix  spinner not squished (flex-shrink:0, h≥48px)');
+  console.log('  CancelFix   cancel button not squished (flex-shrink:0, h≥30px)');
   console.log('  T11 Room 2 runs independently (Room 1 noted if ID held externally)');
   console.log('╚══════════════════════════════════════════════════════╝');
 
