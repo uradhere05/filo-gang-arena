@@ -694,6 +694,200 @@ async function hostEndSession(){
   enterLobby();
 }
 
+/* ─── Player ─── */
+let _knownPhase='',_knownBetOn='';
+
+function startPlayerPolling(){
+  stopIvs();
+  const badge=document.getElementById('p-hole');
+  if(badge)badge.innerHTML='';
+  ivs.push(setInterval(pollGameState,1500));
+  ivs.push(setInterval(writePlayerPresence,20000));
+}
+
+async function writePlayerPresence(){
+  await fb('PUT',`/online/${encodeURIComponent(myName)}`,{ts:Date.now()});
+}
+
+async function pollGameState(){
+  if(_pollRunning)return;_pollRunning=true;
+  try{
+    const[phD,potD,commD,annD,chipsD,betD,foldedD,allInD,winnerD,avsD]=await Promise.all([
+      fb('GET','/poker2/phase'),fb('GET','/poker2/pot'),
+      fb('GET','/poker2/community'),fb('GET','/poker2/announcement'),
+      fb('GET','/poker2/chips'),fb('GET','/poker2/bet'),
+      fb('GET','/poker2/folded'),fb('GET','/poker2/allIn'),
+      fb('GET','/poker2/winner'),fb('GET','/poker2/avatars'),
+    ]);
+    if(phD==='reset'){
+      stopIvs();
+      toast('Dealer ended the session',3000);
+      setTimeout(()=>location.replace('index.html'),2000);
+      return;
+    }
+    if(potD!=null)pot=potD;
+    if(chipsD)Object.entries(chipsD).forEach(([k,v])=>{chipsMap[decN(k)]=v;});
+    if(foldedD)Object.entries(foldedD).forEach(([k,v])=>{foldedMap[decN(k)]=v;});
+    if(allInD)Object.entries(allInD).forEach(([k,v])=>{allInMap[decN(k)]=v;});
+    if(avsD)Object.entries(avsD).forEach(([k,v])=>{avatarsMap[decN(k)]=v;});
+    if(commD)for(let i=0;i<5;i++) communityCards[i]=commD[i]||null;
+    if(betD){
+      currentBet=betD.current||0;
+      betOn=betD.on||'';
+      if(betD.street)Object.entries(betD.street).forEach(([k,v])=>{betStreetMap[decN(k)]=v;});
+    }
+    renderCommunityCards();
+    renderStatusRow();
+    renderOtherPlayers();
+    const annEl=document.getElementById('p-ann');
+    if(annEl){annEl.style.display=annD?'':'none';if(annD)annEl.textContent=annD;}
+    if(phD!==_knownPhase||betOn!==_knownBetOn){
+      _knownPhase=phD;_knownBetOn=betOn;
+      await renderPlayerPhase(phD,winnerD);
+    }
+  }finally{_pollRunning=false;}
+}
+
+function renderCommunityCards(){
+  const el=document.getElementById('p-community');
+  if(!el)return;
+  el.innerHTML='';
+  for(let i=0;i<5;i++){
+    el.innerHTML+=communityCards[i]?cardHTML(communityCards[i]):emptyCardHTML();
+  }
+}
+
+function renderStatusRow(){
+  const myChips=chipsMap[myName]||0;
+  const myBet=betStreetMap[myName]||0;
+  const toCall=Math.max(0,currentBet-myBet);
+  document.getElementById('p-mystack').textContent=fmtChips(myChips);
+  document.getElementById('p-pot').textContent=fmtChips(pot);
+  document.getElementById('p-tocall').textContent=fmtChips(toCall);
+}
+
+function renderOtherPlayers(){
+  const el=document.getElementById('p-others');
+  if(!el)return;
+  const players=Object.keys(chipsMap).filter(n=>n!==myName);
+  el.innerHTML=players.map(n=>{
+    const folded=foldedMap[n];
+    const isMe=n===myName;
+    return`<div class="pl-row${folded?' pl-folded':''}${isMe?' pl-me':''}">
+      <span>${getAvatar(n)} ${escHtml(n)}${n===betOn?' ⏳':''}</span>
+      <span class="pl-chips">${fmtChips(chipsMap[n]||0)}</span>
+    </div>`;
+  }).join('');
+}
+
+async function renderPlayerPhase(ph,winner){
+  const myChips=chipsMap[myName]||0;
+  const myFolded=foldedMap[myName];
+  const myBet=betStreetMap[myName]||0;
+  const toCall=Math.max(0,currentBet-myBet);
+  const isMyTurn=betOn===myName&&!myFolded;
+  const actionEl=document.getElementById('p-action');
+  const holeEl=document.getElementById('p-hole');
+
+  if(ph==='lobby'||ph==='reset'){
+    actionEl.innerHTML='<div style="opacity:.4;font-size:.82rem;text-align:center;padding:16px">Waiting for dealer to start…</div>';
+    return;
+  }
+  if(ph==='preflop'||ph==='flop'||ph==='turn'||ph==='river'){
+    if(holeEl&&!holeEl.innerHTML){
+      const hD=await fb('GET',`/poker2/hands/${encN(myName)}`);
+      if(hD&&Array.isArray(hD))holeEl.innerHTML=hD.map(c=>cardHTML(c)).join('');
+      holeCards=hD||[];
+    }
+    if(myFolded||myChips===0){
+      actionEl.innerHTML='<div class="phase-card"><div style="font-size:2rem">👻</div><div style="opacity:.6;margin-top:8px">'+
+        (myFolded?'You folded. Watching…':'You\'re all-in. Watching…')+'</div></div>';
+      return;
+    }
+    if(isMyTurn){
+      renderActionButtons(toCall,myChips);
+    } else {
+      actionEl.innerHTML=`<div style="opacity:.45;font-size:.82rem;text-align:center;padding:12px">
+        ${betOn?`Waiting for ${escHtml(betOn)}…`:'Waiting for dealer…'}</div>`;
+    }
+  }
+  if(ph==='showdown'){
+    const sdD=await fb('GET',`/poker2/showdown/${encN(myName)}`)||[];
+    if(holeEl&&sdD.length)holeEl.innerHTML=sdD.map(c=>cardHTML(c)).join('');
+    const myScore=holeCards.length===2&&communityCards.filter(Boolean).length>=3
+      ?bestOf7([...holeCards,...communityCards.filter(Boolean)]):-1;
+    const isWinner=winner&&winner.includes(myName);
+    actionEl.innerHTML=`<div class="phase-card" style="border-color:${isWinner?'rgba(255,210,0,.5)':'rgba(76,175,80,.3)'}">
+      <div style="font-size:2.2rem">${isWinner?'🏆':'💸'}</div>
+      <div style="font-weight:900;font-size:1.1rem;margin:6px 0">${isWinner?'You Win!':'Better luck next time'}</div>
+      ${myScore>0?`<div style="font-size:.75rem;opacity:.6">${handName(myScore)}</div>`:''}
+      <div style="font-size:.78rem;opacity:.5;margin-top:6px">Waiting for dealer to start next hand…</div>
+    </div>`;
+    if(myChips===0){
+      actionEl.innerHTML+=`<div style="text-align:center;margin-top:10px">
+        <div style="font-size:1rem;font-weight:700;margin-bottom:8px">You're out of chips!</div>
+        <button class="btn btn-gold btn-sm" onclick="requestRebuy()">💵 Re-buy $20.00</button>
+      </div>`;
+    }
+  }
+}
+
+function renderActionButtons(toCall,myChips){
+  const canCheck=toCall===0;
+  const minRaise=currentBet+betLastRaise;
+  const actionEl=document.getElementById('p-action');
+  actionEl.innerHTML=`
+    <div class="action-panel">
+      <div class="action-row">
+        <button class="btn btn-danger btn-sm" onclick="submitAction('fold',0)">Fold</button>
+        ${canCheck
+          ?`<button class="btn btn-primary btn-sm" onclick="submitAction('check',0)">Check</button>`
+          :`<button class="btn btn-primary btn-sm" onclick="submitAction('call',${currentBet})">${toCall>=myChips?'All-In':'Call'} ${fmtChips(toCall)}</button>`
+        }
+      </div>
+      <div class="raise-row">
+        <input type="number" class="raise-input" id="raise-amt"
+          min="${minRaise}" max="${(betStreetMap[myName]||0)+myChips}"
+          step="10" value="${minRaise}" placeholder="${fmtChips(minRaise)}">
+        <button class="btn btn-gold btn-sm" onclick="submitRaise()">Raise</button>
+      </div>
+      <div style="font-size:.6rem;opacity:.4;text-align:center;margin-top:4px">
+        min raise: ${fmtChips(minRaise)} · max: ${fmtChips((betStreetMap[myName]||0)+myChips)}
+      </div>
+    </div>`;
+}
+
+async function submitAction(type,amount){
+  await fb('PUT',`/poker2/bet/action/${encN(myName)}`,{type,amount,ts:Date.now()});
+  const actionEl=document.getElementById('p-action');
+  actionEl.innerHTML='<div style="opacity:.5;font-size:.82rem;text-align:center;padding:12px">'+
+    (type==='fold'?'Folded.':type==='check'?'Checked. Waiting…':'Called. Waiting…')+'</div>';
+}
+
+async function submitRaise(){
+  const input=document.getElementById('raise-amt');
+  const raiseTotal=Math.round(+input.value/10)*10;
+  const minRaise=currentBet+betLastRaise;
+  const myMaxBet=(betStreetMap[myName]||0)+(chipsMap[myName]||0);
+  if(raiseTotal<minRaise){toast(`Min raise is ${fmtChips(minRaise)}`);return;}
+  if(raiseTotal>myMaxBet){toast(`Max bet is ${fmtChips(myMaxBet)}`);return;}
+  await fb('PUT',`/poker2/bet/action/${encN(myName)}`,{type:'raise',amount:raiseTotal,ts:Date.now()});
+  const actionEl=document.getElementById('p-action');
+  actionEl.innerHTML=`<div style="opacity:.5;font-size:.82rem;text-align:center;padding:12px">Raised to ${fmtChips(raiseTotal)}. Waiting…</div>`;
+}
+
+async function requestRebuy(){
+  const curChips=await fb('GET',`/poker2/chips/${encN(myName)}`)||0;
+  if(curChips>0){toast('You still have chips!');return;}
+  const ph=await fb('GET','/poker2/phase');
+  if(ph==='preflop'||ph==='flop'||ph==='turn'||ph==='river'){
+    toast("Can't rebuy during a live hand");return;
+  }
+  chipsMap[myName]=STARTING_CHIPS;
+  await fb('PUT',`/poker2/chips/${encN(myName)}`,STARTING_CHIPS);
+  toast('Re-bought for $20.00! You\'re back in.');
+}
+
 window.addEventListener('beforeunload',()=>{
   if(myName){
     fetch(`${DB}/online/${encodeURIComponent(myName)}.json`,{method:'DELETE',keepalive:true});
