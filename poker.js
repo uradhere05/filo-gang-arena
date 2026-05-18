@@ -66,14 +66,19 @@ async function recordPokerSession(){
   if(!isHost||!Object.keys(chipsMap).length)return;
   const monthKey=getMonthKey();
   const today=new Date().toISOString().slice(0,10);
-  const curCount=await fb('GET',`/poker-hall/${monthKey}/count`)||0;
-  const gameNum=curCount+1;
-  await fb('PUT',`/poker-hall/${monthKey}/count`,gameNum);
+  // daily game number — resets to 1 each new day
+  const dailyCount=await fb('GET',`/poker-hall/${monthKey}/daily/${today}`)||0;
+  const gameNum=dailyCount+1;
+  await fb('PUT',`/poker-hall/${monthKey}/daily/${today}`,gameNum);
+  // monthly session id for unique storage key
+  const totalCount=await fb('GET',`/poker-hall/${monthKey}/count`)||0;
+  const sessionId=totalCount+1;
+  await fb('PUT',`/poker-hall/${monthKey}/count`,sessionId);
   const results={};
   for(const[name,chips]of Object.entries(chipsMap)){
-    results[encN(name)]=chips-STARTING_CHIPS;
+    results[encN(name)]={buyIn:STARTING_CHIPS,net:chips-STARTING_CHIPS};
   }
-  await fb('PUT',`/poker-hall/${monthKey}/sessions/${gameNum}`,{date:today,gameNum,results});
+  await fb('PUT',`/poker-hall/${monthKey}/sessions/${sessionId}`,{date:today,gameNum,results});
 }
 
 async function loadPokerHall(){
@@ -89,30 +94,42 @@ async function loadPokerHall(){
     bodies.forEach(el=>el.innerHTML='<div class="hall-empty">No sessions this month</div>');
     return;
   }
-  const totals={};
+  // parse result entry — supports old flat number and new {buyIn,net} object
+  const parseEntry=v=>typeof v==='object'&&v!==null?{buyIn:v.buyIn||STARTING_CHIPS,net:v.net||0}:{buyIn:STARTING_CHIPS,net:v||0};
+  // accumulate monthly totals
+  const totals={};   // { name: { buyIn, net } }
   for(const s of sessions){
-    for(const[enc,net]of Object.entries(s.results||{})){
-      const n=decN(enc);totals[n]=(totals[n]||0)+net;
+    for(const[enc,val]of Object.entries(s.results||{})){
+      const n=decN(enc);
+      const{buyIn,net}=parseEntry(val);
+      if(!totals[n])totals[n]={buyIn:0,net:0};
+      totals[n].buyIn+=buyIn;
+      totals[n].net+=net;
     }
   }
-  const sortedTotals=Object.entries(totals).sort((a,b)=>b[1]-a[1]);
+  const sortedTotals=Object.entries(totals).sort((a,b)=>b[1].net-a[1].net);
+  const medals=['🥇','🥈','🥉'];
   let html='<div class="hall-sub-hdr">Monthly Totals</div>';
-  sortedTotals.forEach(([name,net],i)=>{
+  sortedTotals.forEach(([name,t],i)=>{
     html+=`<div class="hall-total-row">
-      <span class="hall-tr-rank">${i+1}</span>
+      <span class="hall-tr-rank">${medals[i]||i+1}</span>
       <span class="hall-tr-name">${name}</span>
-      <span class="hall-tr-amt ${netCls(net)}">${fmtNet(net)}</span>
+      <span class="hall-tr-buyin">$${(t.buyIn/100).toFixed(0)} in</span>
+      <span class="hall-tr-amt ${netCls(t.net)}">${fmtNet(t.net)}</span>
     </div>`;
   });
   html+='<div class="hall-sub-hdr" style="margin-top:14px">Session History</div>';
   for(const s of sessions){
     const d=new Date(s.date+'T12:00:00');
     const dateStr=d.toLocaleDateString('en-AU',{month:'short',day:'numeric'});
-    const players=Object.entries(s.results||{}).map(([k,v])=>[decN(k),v]).sort((a,b)=>b[1]-a[1]);
+    const players=Object.entries(s.results||{})
+      .map(([k,v])=>{const{buyIn,net}=parseEntry(v);return[decN(k),buyIn,net];})
+      .sort((a,b)=>b[2]-a[2]);
     html+=`<div class="hall-session"><div class="hall-session-hdr">Game #${s.gameNum} · ${dateStr}</div>`;
-    players.forEach(([name,net])=>{
+    players.forEach(([name,buyIn,net])=>{
       html+=`<div class="hall-session-row">
         <span class="hall-sr-name">${name}</span>
+        <span class="hall-sr-buyin">$${(buyIn/100).toFixed(0)}</span>
         <span class="hall-sr-amt ${netCls(net)}">${fmtNet(net)}</span>
       </div>`;
     });

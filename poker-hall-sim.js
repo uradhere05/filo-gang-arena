@@ -77,29 +77,40 @@ async function run() {
   // Clear this month's hall data for a clean sim
   await fb('DELETE', `/poker-hall/${monthKey}/sessions`);
   await fb('DELETE', `/poker-hall/${monthKey}/count`);
+  await fb('DELETE', `/poker-hall/${monthKey}/daily`);
   console.log('  Cleared previous hall data for this month.\n');
 
-  const monthlyTotals = {};
-  PLAYERS.forEach(n => (monthlyTotals[n] = 0));
+  const monthlyTotals = {};   // { name: { buyIn, net } }
+  PLAYERS.forEach(n => (monthlyTotals[n] = { buyIn: 0, net: 0 }));
+
+  const dailyCounts = {};  // track game # per date
 
   for (let i = 0; i < GAMES.length; i++) {
-    const g       = GAMES[i];
-    const gameNum = i + 1;
+    const g = GAMES[i];
 
-    // Build encoded results for Firebase
+    // daily game number — resets to 1 each new date
+    dailyCounts[g.date] = (dailyCounts[g.date] || 0) + 1;
+    const gameNum = dailyCounts[g.date];
+    await fb('PUT', `/poker-hall/${monthKey}/daily/${g.date}`, gameNum);
+
+    // monthly session id
+    const sessionId = i + 1;
+
+    // Build encoded results — new {buyIn, net} format
     const results = {};
     for (const [name, net] of Object.entries(g.nets)) {
-      results[encN(name)] = net;
-      monthlyTotals[name] += net;
+      results[encN(name)] = { buyIn: STARTING_CHIPS, net };
+      monthlyTotals[name].buyIn += STARTING_CHIPS;
+      monthlyTotals[name].net  += net;
     }
 
     // Write session record
-    await fb('PUT', `/poker-hall/${monthKey}/sessions/${gameNum}`, {
+    await fb('PUT', `/poker-hall/${monthKey}/sessions/${sessionId}`, {
       date: g.date,
       gameNum,
       results,
     });
-    await fb('PUT', `/poker-hall/${monthKey}/count`, gameNum);
+    await fb('PUT', `/poker-hall/${monthKey}/count`, sessionId);
 
     // Biggest net winner gets a leaderboard poker win
     const winner = Object.entries(g.nets).sort((a, b) => b[1] - a[1])[0][0];
@@ -123,13 +134,13 @@ async function run() {
   }
 
   // Print monthly totals
-  const sorted = Object.entries(monthlyTotals).sort((a, b) => b[1] - a[1]);
-  console.log('═'.repeat(38));
+  const sorted = Object.entries(monthlyTotals).sort((a, b) => b[1].net - a[1].net);
+  console.log('═'.repeat(46));
   console.log('  Hall of Chips — May 2026 Totals');
-  console.log('═'.repeat(38));
-  sorted.forEach(([name, total], i) => {
+  console.log('═'.repeat(46));
+  sorted.forEach(([name, t], i) => {
     const medal = ['🥇','🥈','🥉'][i] || `${i+1}.`;
-    console.log(`  ${medal} ${name.padEnd(12)} ${fmtNet(total)}`);
+    console.log(`  ${medal} ${name.padEnd(12)} $${(t.buyIn/100).toFixed(0)} in   ${fmtNet(t.net)}`);
   });
   console.log();
   console.log('✅ Done — open poker.html lobby to see the Hall of Chips');
